@@ -20,8 +20,15 @@
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/$1"
+      "handle": "filesystem"
+    },
+    {
+      "src": "/api/scan",
+      "dest": "/api/scan.js"
+    },
+    {
+      "src": "/api/hot-items",
+      "dest": "/api/hot-items.js"
     },
     {
       "src": "/(.*)",

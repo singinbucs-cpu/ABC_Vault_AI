@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { scanShop } = require("./lib/scan");
+const hotItemsHandler = require("./api/hot-items");
 
 const rootDir = __dirname;
 const port = Number(process.env.PORT || 3000);
@@ -20,6 +21,32 @@ function sendJson(res, statusCode, payload) {
     "Cache-Control": "no-store",
   });
   res.end(JSON.stringify(payload, null, 2));
+}
+
+function sendNodeResponse(res) {
+  return {
+    setHeader(name, value) {
+      res.setHeader(name, value);
+    },
+    status(statusCode) {
+      res.statusCode = statusCode;
+      return this;
+    },
+    send(payload) {
+      res.end(payload);
+    },
+  };
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
 }
 
 function serveFile(reqPath, res) {
@@ -60,6 +87,26 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "scan_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/hot-items") {
+    try {
+      const rawBody = ["POST", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+      await hotItemsHandler(
+        {
+          method: req.method,
+          body: parsedBody,
+        },
+        sendNodeResponse(res),
+      );
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "hot_items_failed",
         message: error.message,
       });
     }
