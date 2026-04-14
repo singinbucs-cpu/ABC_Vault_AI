@@ -1,0 +1,21 @@
+{
+  "name": "abc-vault-live-scanner",
+  "version": "1.0.0",
+  "description": "Live HTML scanner and diff viewer for the ABC Vault shop listing page.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "scanner",
+    "react",
+    "vercel",
+    "scraper"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
