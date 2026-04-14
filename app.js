@@ -183,9 +183,9 @@ function App() {
           ${data
             ? html`
                 <div className="meta-list">
-                  <span className="meta-item">`Buy Now` on a card means direct purchase is exposed on the listing page.</span>
-                  <span className="meta-item">`View Product` only means the listing page itself does not show a purchase action.</span>
-                  <span className="meta-item">Inventory quantity is reported as `Not Shown` unless the HTML explicitly exposes it.</span>
+                  <span className="meta-item"><code>Buy Now</code> on a card means direct purchase is exposed on the listing page.</span>
+                  <span className="meta-item"><code>View Product</code> only means the listing page itself does not show a purchase action.</span>
+                  <span className="meta-item">Inventory quantity is reported as <code>Not Shown</code> unless the HTML explicitly exposes it.</span>
                   <span className="meta-item">Sold out is only marked when the listing HTML shows a stock-out signal.</span>
                 </div>
                 <div className="diff-columns">
@@ -226,7 +226,7 @@ function App() {
                   <div className="diff-column">
                     <h3>Interpretation rules</h3>
                     <ul className="plain-list">
-                      <li>Missing quantity stays `Not Shown`.</li>
+                      <li>Missing quantity stays <code>Not Shown</code>.</li>
                       <li>Missing buy button does not automatically mean sold out.</li>
                       <li>Only explicit stock-out HTML marks a row as sold out.</li>
                     </ul>
