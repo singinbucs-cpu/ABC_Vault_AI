@@ -5,8 +5,11 @@ import htm from "https://esm.sh/htm@3.1.1";
 const html = htm.bind(React.createElement);
 const STORAGE_KEY = "abc-vault-live-scanner:last-scan:v1";
 const THEME_STORAGE_KEY = "abc-vault-live-scanner:theme:v1";
+const MAGIC_LINK_COOLDOWN_KEY = "abc-vault-live-scanner:magic-link-cooldown:v1";
+const APP_BASE_URL = "https://abc-vault-live-scanner.vercel.app/";
 const AUTO_REFRESH_SECONDS = 30;
 const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
+const MAGIC_LINK_COOLDOWN_SECONDS = 60;
 
 function createEmptyChangeFeed() {
   return {
@@ -127,6 +130,63 @@ function formatBooleanStatus(value) {
   return "Not attempted yet";
 }
 
+function formatServerRefreshMode(mode) {
+  return mode === "hyper_requested" ? "Hyper mode requested" : "Weekdays at 1:00 AM ET";
+}
+
+function getNextWeekdayOneAmEtDate() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  for (let offset = 0; offset < 14; offset += 1) {
+    const candidateUtc = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
+    const parts = Object.fromEntries(
+      formatter
+        .formatToParts(candidateUtc)
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+
+    const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(parts.weekday);
+    if (!isWeekday) {
+      continue;
+    }
+
+    const sameDayStillAhead = offset === 0 && (Number(parts.hour) < 1 || (Number(parts.hour) === 1 && Number(parts.minute) === 0));
+    const futureDay = offset > 0;
+
+    if (sameDayStillAhead || futureDay) {
+      return `${parts.month}/${parts.day}/${parts.year} 1:00 AM ET`;
+    }
+  }
+
+  return "Unable to calculate";
+}
+
+function getNextServerRefreshLabel(settings, enabledOverride, modeOverride) {
+  const enabled = typeof enabledOverride === "boolean" ? enabledOverride : Boolean(settings?.settings?.enabled);
+  const mode = modeOverride || settings?.settings?.mode || "weekday_1am_et";
+
+  if (!enabled) {
+    return "Disabled";
+  }
+
+  if (mode === "hyper_requested") {
+    return "Every minute on the next available Vercel cron tick";
+  }
+
+  return getNextWeekdayOneAmEtDate();
+}
+
 function getInitialTheme() {
   try {
     const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -138,6 +198,20 @@ function getInitialTheme() {
   }
 
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getInitialMagicLinkCooldown() {
+  try {
+    const raw = window.localStorage.getItem(MAGIC_LINK_COOLDOWN_KEY);
+    const nextAllowedAt = raw ? Number(raw) : 0;
+    if (!nextAllowedAt || Number.isNaN(nextAllowedAt)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.ceil((nextAllowedAt - Date.now()) / 1000));
+  } catch {
+    return 0;
+  }
 }
 
 function diffSnapshots(previousProducts, currentProducts) {
@@ -277,6 +351,7 @@ function App() {
   const [appUser, setAppUser] = useState(null);
   const [authEmail, setAuthEmail] = useState("");
   const [sendingMagicLink, setSendingMagicLink] = useState(false);
+  const [magicLinkCooldownSeconds, setMagicLinkCooldownSeconds] = useState(() => getInitialMagicLinkCooldown());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
@@ -284,6 +359,7 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(AUTO_REFRESH_SECONDS);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [countdown, setCountdown] = useState(AUTO_REFRESH_SECONDS);
   const [changeAlert, setChangeAlert] = useState(null);
   const [changeFeed, setChangeFeed] = useState(createEmptyChangeFeed());
@@ -307,10 +383,15 @@ function App() {
   const [profileCriticalChanged, setProfileCriticalChanged] = useState(false);
   const [profileCriticalRemoved, setProfileCriticalRemoved] = useState(false);
   const [profileCriticalPurchasable, setProfileCriticalPurchasable] = useState(false);
+  const [profileVaultKeyAutoImportEnabled, setProfileVaultKeyAutoImportEnabled] = useState(false);
+  const [profileVaultKeyForwardingEmail, setProfileVaultKeyForwardingEmail] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileTestingNotification, setProfileTestingNotification] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [pushoverConfigured, setPushoverConfigured] = useState(false);
+  const [vaultEmailConfigured, setVaultEmailConfigured] = useState(false);
+  const [vaultEmailForwardingAddress, setVaultEmailForwardingAddress] = useState("");
+  const [vaultEmailAppUrl, setVaultEmailAppUrl] = useState(APP_BASE_URL);
   const [serverRefreshSettings, setServerRefreshSettings] = useState(null);
   const [serverRefreshEnabled, setServerRefreshEnabled] = useState(true);
   const [serverRefreshMode, setServerRefreshMode] = useState("weekday_1am_et");
@@ -381,7 +462,12 @@ function App() {
       setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
+      setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
+      setVaultEmailConfigured(Boolean(payload.vaultEmailConfigured));
+      setVaultEmailForwardingAddress(payload.vaultEmailForwardingAddress || "");
+      setVaultEmailAppUrl(payload.vaultEmailAppUrl || APP_BASE_URL);
       setAuthError("");
     } catch (loadError) {
       setAppUser(null);
@@ -413,6 +499,8 @@ function App() {
           criticalChanged: profileCriticalChanged,
           criticalRemoved: profileCriticalRemoved,
           criticalPurchasable: profileCriticalPurchasable,
+          vaultKeyAutoImportEnabled: profileVaultKeyAutoImportEnabled,
+          vaultKeyForwardingEmail: profileVaultKeyForwardingEmail,
         }),
       });
 
@@ -436,11 +524,14 @@ function App() {
       setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
+      setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
+      setVaultEmailConfigured(Boolean(payload.vaultEmailConfigured));
+      setVaultEmailForwardingAddress(payload.vaultEmailForwardingAddress || "");
+      setVaultEmailAppUrl(payload.vaultEmailAppUrl || APP_BASE_URL);
       setProfileMessage(
-        payload.appUser?.notificationsEnabled
-          ? "Profile saved. Your Pushover notification settings were updated."
-          : "Profile saved. Pushover notifications are turned off for your account.",
+        "Profile saved. Your alert and Vault Key settings were updated.",
       );
     } catch (saveError) {
       setProfileMessage(saveError.message || "Unable to save your profile settings.");
@@ -487,7 +578,9 @@ function App() {
     loadingRef.current = true;
     setLoading(true);
     setError("");
-    setCountdown(refreshIntervalSeconds);
+    if (autoRefreshEnabled) {
+      setCountdown(refreshIntervalSeconds);
+    }
     setStatusMessage(
       dataRef.current
         ? mode === "auto"
@@ -826,8 +919,13 @@ function App() {
       setProfileCriticalChanged(false);
       setProfileCriticalRemoved(false);
       setProfileCriticalPurchasable(false);
+      setProfileVaultKeyAutoImportEnabled(false);
+      setProfileVaultKeyForwardingEmail("");
       setProfileTestingNotification(false);
       setProfileMessage("");
+      setVaultEmailConfigured(false);
+      setVaultEmailForwardingAddress("");
+      setVaultEmailAppUrl(APP_BASE_URL);
       setServerRefreshSettings(null);
       setServerRefreshEnabled(true);
       setServerRefreshMode("weekday_1am_et");
@@ -875,7 +973,7 @@ function App() {
 
   useEffect(() => {
     runScanRef.current = runScan;
-  }, [data, loading, changeFeed, refreshIntervalSeconds]);
+  }, [data, loading, changeFeed, refreshIntervalSeconds, autoRefreshEnabled]);
 
   useEffect(() => {
     if (!changeAlert) {
@@ -891,12 +989,18 @@ function App() {
   }, [changeAlert]);
 
   useEffect(() => {
-    setCountdown(refreshIntervalSeconds);
-  }, [refreshIntervalSeconds]);
+    if (autoRefreshEnabled) {
+      setCountdown(refreshIntervalSeconds);
+    }
+  }, [refreshIntervalSeconds, autoRefreshEnabled]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       setCountdown((previousValue) => {
+        if (!autoRefreshEnabled) {
+          return previousValue;
+        }
+
         if (loadingRef.current) {
           return previousValue;
         }
@@ -913,7 +1017,7 @@ function App() {
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshIntervalSeconds]);
+  }, [refreshIntervalSeconds, autoRefreshEnabled]);
 
   const categories = useMemo(() => {
     if (!data?.products) {
@@ -1056,6 +1160,11 @@ function App() {
       return;
     }
 
+    if (magicLinkCooldownSeconds > 0) {
+      setAuthError(`Please wait ${magicLinkCooldownSeconds}s before requesting another magic link.`);
+      return;
+    }
+
     const email = authEmail.trim();
     if (!email) {
       setAuthError("Enter an email address to continue.");
@@ -1069,7 +1178,7 @@ function App() {
       const { error: signInError } = await supabaseRef.current.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: APP_BASE_URL,
         },
       });
 
@@ -1077,13 +1186,56 @@ function App() {
         throw signInError;
       }
 
+      try {
+        const nextAllowedAt = Date.now() + MAGIC_LINK_COOLDOWN_SECONDS * 1000;
+        window.localStorage.setItem(MAGIC_LINK_COOLDOWN_KEY, String(nextAllowedAt));
+        setMagicLinkCooldownSeconds(MAGIC_LINK_COOLDOWN_SECONDS);
+      } catch {
+        // Ignore storage issues and still allow sign-in.
+      }
+
       setAuthError(`Magic link sent to ${email}. Open it on this device to sign in.`);
     } catch (signInError) {
-      setAuthError(signInError.message || "Unable to send the magic link.");
+      const message = signInError.message || "Unable to send the magic link.";
+      if (message.toLowerCase().includes("rate limit")) {
+        try {
+          const nextAllowedAt = Date.now() + MAGIC_LINK_COOLDOWN_SECONDS * 1000;
+          window.localStorage.setItem(MAGIC_LINK_COOLDOWN_KEY, String(nextAllowedAt));
+          setMagicLinkCooldownSeconds(MAGIC_LINK_COOLDOWN_SECONDS);
+        } catch {
+          // Ignore storage issues and still surface the error.
+        }
+        setAuthError("Too many magic-link requests were sent. Please wait about a minute and try again.");
+      } else {
+        setAuthError(message);
+      }
     } finally {
       setSendingMagicLink(false);
     }
   };
+
+  useEffect(() => {
+    if (magicLinkCooldownSeconds <= 0) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setMagicLinkCooldownSeconds((currentValue) => {
+        if (currentValue <= 1) {
+          try {
+            window.localStorage.removeItem(MAGIC_LINK_COOLDOWN_KEY);
+          } catch {
+            // Ignore storage failures.
+          }
+          return 0;
+        }
+
+        return currentValue - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [magicLinkCooldownSeconds]);
 
   const signOut = async () => {
     if (!supabaseRef.current) {
@@ -1156,8 +1308,12 @@ function App() {
                   autocomplete="email"
                 />
               </label>
-              <button className="button button-primary" type="submit" disabled=${sendingMagicLink}>
-                ${sendingMagicLink ? "Sending magic link..." : "Send magic link"}
+              <button className="button button-primary" type="submit" disabled=${sendingMagicLink || magicLinkCooldownSeconds > 0}>
+                ${sendingMagicLink
+                  ? "Sending magic link..."
+                  : magicLinkCooldownSeconds > 0
+                  ? `Try again in ${magicLinkCooldownSeconds}s`
+                  : "Send magic link"}
               </button>
             </form>
             ${authError ? html`<div className="auth-note">${authError}</div>` : null}
@@ -1259,7 +1415,9 @@ function App() {
             </div>
             <div className="countdown-row">
               <strong>Next auto refresh:</strong>
-              <span>${loading ? "Waiting for current scan..." : `${countdown}s`}</span>
+              <span>
+                ${!autoRefreshEnabled ? "Paused" : loading ? "Waiting for current scan..." : `${countdown}s`}
+              </span>
             </div>
             <div className="refresh-rate-row">
               <strong>Refresh rate:</strong>
@@ -1274,6 +1432,26 @@ function App() {
                     </button>
                   `,
                 )}
+              </div>
+            </div>
+            <div className="refresh-rate-row">
+              <strong>Browser auto refresh:</strong>
+              <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
+                <button
+                  className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                  onClick=${() => {
+                    setAutoRefreshEnabled(true);
+                    setCountdown(refreshIntervalSeconds);
+                  }}
+                >
+                  Start
+                </button>
+                <button
+                  className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                  onClick=${() => setAutoRefreshEnabled(false)}
+                >
+                  Stop
+                </button>
               </div>
             </div>
             <div><strong>Current scan:</strong> ${formatScanTime(data?.scannedAt)}</div>
@@ -1446,6 +1624,7 @@ function App() {
                     <span>Role: ${appUser.role}</span>
                     <span>Theme: ${theme === "dark" ? "Dark" : "Light"}</span>
                     <span>Pushover: ${appUser.notificationsEnabled ? "Enabled" : "Disabled"}</span>
+                    <span>Vault Key: ${appUser?.vaultKeyCode ? "Saved" : "Not saved yet"}</span>
                   </div>
                 </article>
                 <article className="manager-card">
@@ -1466,6 +1645,75 @@ function App() {
                       Dark mode
                     </button>
                   </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Vault Access</div>
+                  <h3 className="manager-title">Vault Key email import</h3>
+                  <p className="section-note">
+                    Forward your ABC Vault invitation email through your inbound email service, and the app will try to
+                    capture the Vault Key code automatically into your profile.
+                  </p>
+                  <label className="auth-field">
+                    <span className="filter-label">Forwarded from email</span>
+                    <input
+                      className="auth-input"
+                      type="email"
+                      value=${profileVaultKeyForwardingEmail}
+                      onInput=${(event) => setProfileVaultKeyForwardingEmail(event.target.value)}
+                      placeholder=${appUser.email}
+                      autocomplete="email"
+                    />
+                  </label>
+                  <div className="profile-toggle-row">
+                    <span>
+                      <strong>Enable automatic Vault Key import</strong>
+                      <small>
+                        When on, the inbound email endpoint will save the latest Vault Key code for the forwarded email
+                        address above.
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      className=${`profile-toggle ${profileVaultKeyAutoImportEnabled ? "profile-toggle-on" : ""}`}
+                      aria-pressed=${profileVaultKeyAutoImportEnabled}
+                      onClick=${() => setProfileVaultKeyAutoImportEnabled((currentValue) => !currentValue)}
+                    >
+                      <span className="profile-toggle-knob"></span>
+                    </button>
+                  </div>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Latest Vault Key: ${appUser?.vaultKeyCode || "No code stored yet"}</span>
+                    <span>
+                      Last imported:
+                      ${appUser?.vaultKeyLastReceivedAt ? formatScanTime(appUser.vaultKeyLastReceivedAt) : "No email processed yet"}
+                    </span>
+                    <span>Source sender: ${appUser?.vaultKeySourceFrom || "Not captured yet"}</span>
+                    <span>Source subject: ${appUser?.vaultKeySourceSubject || "Not captured yet"}</span>
+                    <span>Preview: ${appUser?.vaultKeySourcePreview || "No inbound email preview stored yet."}</span>
+                  </div>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Inbound endpoint: <code>/api/vault-key-email</code></span>
+                    <span>
+                      Forwarding address:
+                      ${vaultEmailForwardingAddress ? html`<code>${vaultEmailForwardingAddress}</code>` : "Not configured yet"}
+                    </span>
+                    <span>
+                      App URL used after sign-in:
+                      <a className="product-link" href=${vaultEmailAppUrl} target="_blank" rel="noreferrer">
+                        ${vaultEmailAppUrl}
+                      </a>
+                    </span>
+                  </div>
+                  ${!vaultEmailConfigured
+                    ? html`
+                        <div className="empty-state">
+                          Add <code>VAULT_EMAIL_WEBHOOK_SECRET</code> on the server to enable secure inbound email
+                          processing. If you are using a forwarding provider, set
+                          <code>VAULT_EMAIL_FORWARDING_ADDRESS</code>
+                          too so the setup instructions show the right destination.
+                        </div>
+                      `
+                    : null}
                 </article>
                 <article className="manager-card">
                   <div className="manager-kicker">Alerts</div>
@@ -1670,7 +1918,7 @@ function App() {
                   ${profileMessage ? html`<div className="scan-status">${profileMessage}</div>` : null}
                   <div className="change-toast-actions">
                     <button className="button button-primary" onClick=${saveProfile} disabled=${profileSaving}>
-                      ${profileSaving ? "Saving profile..." : "Save notification settings"}
+                      ${profileSaving ? "Saving profile..." : "Save profile settings"}
                     </button>
                     <button
                       className="button button-secondary"
@@ -1751,7 +1999,11 @@ function App() {
                     </span>
                     <span>
                       Active mode:
-                      ${serverRefreshMode === "hyper_requested" ? "Hyper mode requested" : "Weekdays at 1:00 AM ET"}
+                      ${formatServerRefreshMode(serverRefreshMode)}
+                    </span>
+                    <span>
+                      Next scheduled refresh:
+                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshMode)}
                     </span>
                     <span>
                       Platform limit:

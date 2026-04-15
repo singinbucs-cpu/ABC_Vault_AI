@@ -145,6 +145,8 @@ body::before {
 
 .auth-panel {
   max-width: 760px;
+  position: relative;
+  z-index: 1;
 }
 
 .auth-form {
@@ -152,6 +154,9 @@ body::before {
   gap: 14px;
   max-width: 420px;
   margin-top: 24px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
 }
 
 .auth-field {
@@ -167,6 +172,7 @@ body::before {
   color: var(--text);
   padding: 14px 16px;
   font: inherit;
+  width: 100%;
 }
 
 .auth-note {
@@ -1024,6 +1030,16 @@ tbody tr:hover td {
 
   .profile-toggle-pair {
     width: 100%;
+  }
+
+  .auth-form {
+    max-width: none;
+  }
+
+  .auth-form .button {
+    width: 100%;
+    min-height: 52px;
+    touch-action: manipulation;
   }
 }
 

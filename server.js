@@ -8,6 +8,7 @@ const authConfigHandler = require("./api/auth-config");
 const meHandler = require("./api/me");
 const pushoverTestHandler = require("./api/pushover-test");
 const serverRefreshSettingsHandler = require("./api/server-refresh-settings");
+const vaultKeyEmailHandler = require("./api/vault-key-email");
 
 const rootDir = __dirname;
 const port = Number(process.env.PORT || 3000);
@@ -187,6 +188,29 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "server_refresh_settings_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/vault-key-email") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      let parsedBody = undefined;
+
+      if (rawBody) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch {
+          parsedBody = { raw: rawBody };
+        }
+      }
+
+      await vaultKeyEmailHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "vault_key_email_failed",
         message: error.message,
       });
     }

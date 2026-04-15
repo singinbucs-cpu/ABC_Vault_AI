@@ -51,6 +51,10 @@
       "dest": "/api/server-refresh-settings.js"
     },
     {
+      "src": "/api/vault-key-email",
+      "dest": "/api/vault-key-email.js"
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.html"
     }

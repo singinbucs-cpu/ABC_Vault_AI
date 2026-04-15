@@ -1,6 +1,7 @@
 const { requireAppUser } = require("../lib/auth");
 const { updateAppUserProfile } = require("../lib/app-users-db");
 const { validatePushoverUserKey, isPushoverConfigured } = require("../lib/pushover");
+const { getVaultEmailConfig, isVaultEmailIngestConfigured } = require("../lib/vault-key-email");
 
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -37,6 +38,9 @@ module.exports = async (req, res) => {
       const criticalChanged = Boolean(body.criticalChanged);
       const criticalRemoved = Boolean(body.criticalRemoved);
       const criticalPurchasable = Boolean(body.criticalPurchasable);
+      const vaultKeyAutoImportEnabled = Boolean(body.vaultKeyAutoImportEnabled);
+      const vaultKeyForwardingEmail =
+        typeof body.vaultKeyForwardingEmail === "string" ? body.vaultKeyForwardingEmail.trim() : "";
 
       if (notificationsEnabled && !pushoverUserKey) {
         res.status(400).send(
@@ -70,7 +74,11 @@ module.exports = async (req, res) => {
         criticalChanged,
         criticalRemoved,
         criticalPurchasable,
+        vaultKeyAutoImportEnabled,
+        vaultKeyForwardingEmail,
       });
+
+      const vaultEmailConfig = getVaultEmailConfig();
 
       res.status(200).send(
         JSON.stringify(
@@ -82,6 +90,9 @@ module.exports = async (req, res) => {
             },
             appUser: updatedAppUser,
             pushoverConfigured: isPushoverConfigured(),
+            vaultEmailConfigured: isVaultEmailIngestConfigured(),
+            vaultEmailForwardingAddress: vaultEmailConfig.forwardingAddress || null,
+            vaultEmailAppUrl: vaultEmailConfig.appUrl || null,
           },
           null,
           2,
@@ -113,6 +124,9 @@ module.exports = async (req, res) => {
         },
         appUser: auth.appUser,
         pushoverConfigured: isPushoverConfigured(),
+        vaultEmailConfigured: isVaultEmailIngestConfigured(),
+        vaultEmailForwardingAddress: getVaultEmailConfig().forwardingAddress || null,
+        vaultEmailAppUrl: getVaultEmailConfig().appUrl || null,
       },
       null,
       2,
