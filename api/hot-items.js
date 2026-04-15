@@ -4,10 +4,16 @@ const {
   upsertHotItem,
   removeHotItem,
 } = require("../lib/hot-items-db");
+const { requireAppUser } = require("../lib/auth");
 
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
+
+  const auth = await requireAppUser(req, res);
+  if (!auth) {
+    return;
+  }
 
   if (!isHotStorageConfigured()) {
     res.status(200).send(

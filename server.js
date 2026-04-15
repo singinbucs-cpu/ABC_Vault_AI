@@ -1,8 +1,12 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { scanShop } = require("./lib/scan");
 const hotItemsHandler = require("./api/hot-items");
+const scanHandler = require("./api/scan");
+const cronScanHandler = require("./api/cron-scan");
+const authConfigHandler = require("./api/auth-config");
+const meHandler = require("./api/me");
+const pushoverTestHandler = require("./api/pushover-test");
 
 const rootDir = __dirname;
 const port = Number(process.env.PORT || 3000);
@@ -35,6 +39,15 @@ function sendNodeResponse(res) {
     send(payload) {
       res.end(payload);
     },
+  };
+}
+
+function createNodeRequest(req, url, body) {
+  return {
+    method: req.method,
+    headers: req.headers,
+    query: Object.fromEntries(url.searchParams.entries()),
+    body,
   };
 }
 
@@ -80,13 +93,51 @@ function serveFile(reqPath, res) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (req.method === "GET" && url.pathname === "/api/scan") {
+  if (url.pathname === "/api/scan") {
     try {
-      const result = await scanShop();
-      sendJson(res, 200, result);
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+
+      await scanHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
     } catch (error) {
       sendJson(res, 500, {
         error: "scan_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/cron-scan") {
+    try {
+      await cronScanHandler(createNodeRequest(req, url), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "cron_scan_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/auth-config") {
+    try {
+      await authConfigHandler(createNodeRequest(req, url), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "auth_config_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/me") {
+    try {
+      await meHandler(createNodeRequest(req, url), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "me_failed",
         message: error.message,
       });
     }
@@ -107,6 +158,20 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "hot_items_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/pushover-test") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+      await pushoverTestHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "pushover_test_failed",
         message: error.message,
       });
     }

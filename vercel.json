@@ -27,12 +27,34 @@
       "dest": "/api/scan.js"
     },
     {
+      "src": "/api/auth-config",
+      "dest": "/api/auth-config.js"
+    },
+    {
+      "src": "/api/me",
+      "dest": "/api/me.js"
+    },
+    {
+      "src": "/api/cron-scan",
+      "dest": "/api/cron-scan.js"
+    },
+    {
       "src": "/api/hot-items",
       "dest": "/api/hot-items.js"
     },
     {
+      "src": "/api/pushover-test",
+      "dest": "/api/pushover-test.js"
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron-scan",
+      "schedule": "* * * * *"
     }
   ]
 }

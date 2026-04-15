@@ -4,7 +4,9 @@ import htm from "https://esm.sh/htm@3.1.1";
 
 const html = htm.bind(React.createElement);
 const STORAGE_KEY = "abc-vault-live-scanner:last-scan:v1";
+const THEME_STORAGE_KEY = "abc-vault-live-scanner:theme:v1";
 const AUTO_REFRESH_SECONDS = 30;
+const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
 
 function createEmptyChangeFeed() {
   return {
@@ -28,6 +30,7 @@ function buildAddedItems(items, detectedAt) {
   return items.map((item) => ({
     productId: item.productId || item.productName,
     productName: item.productName,
+    productUrl: item.productUrl || null,
     detectedAt,
   }));
 }
@@ -108,6 +111,35 @@ function formatScanTime(value) {
   }).format(new Date(value));
 }
 
+function formatNotificationMessage(value) {
+  return value || "No notification has been sent yet.";
+}
+
+function formatBooleanStatus(value) {
+  if (value === true) {
+    return "Yes";
+  }
+
+  if (value === false) {
+    return "No";
+  }
+
+  return "Not attempted yet";
+}
+
+function getInitialTheme() {
+  try {
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (storedTheme === "light" || storedTheme === "dark") {
+      return storedTheme;
+    }
+  } catch {
+    // Ignore storage access failures and fall back to system preference.
+  }
+
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function diffSnapshots(previousProducts, currentProducts) {
   const previousMap = new Map(previousProducts.map((item) => [item.productId || item.productName, item]));
   const currentMap = new Map(currentProducts.map((item) => [item.productId || item.productName, item]));
@@ -160,6 +192,14 @@ function diffSnapshots(previousProducts, currentProducts) {
   return { added, removed, changed };
 }
 
+function getServerBackedDiff(payload, currentProducts) {
+  if (payload?.changes) {
+    return payload.changes;
+  }
+
+  return diffSnapshots(currentProducts || [], payload?.products || []);
+}
+
 function truthyTag(value) {
   return html`<span className=${`tag ${value ? "tag-yes" : "tag-no"}`}>${value ? "Yes" : "No"}</span>`;
 }
@@ -168,15 +208,82 @@ function isHotItem(hotItems, productId) {
   return hotItems.some((item) => item.productId === productId);
 }
 
+function renderLinkedProductName(item) {
+  return item.productUrl
+    ? html`
+        <a className="product-link" href=${item.productUrl} target="_blank" rel="noreferrer">
+          ${item.productName}
+        </a>
+      `
+    : html`<span>${item.productName}</span>`;
+}
+
+function getPreviewNames(items, limit = 5) {
+  return items
+    .map((item) => item?.productName)
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function renderStatPreview(items, emptyLabel) {
+  const previewNames = getPreviewNames(items);
+
+  if (!previewNames.length) {
+    return html`<div className="stat-preview-empty">${emptyLabel}</div>`;
+  }
+
+  return html`
+    <div className="stat-preview-list">
+      ${previewNames.map((name) => html`<div className="stat-preview-item">${name}</div>`)}
+    </div>
+  `;
+}
+
+function getAuthErrorMessage(statusCode, payload, fallback) {
+  if (payload?.message) {
+    return payload.message;
+  }
+
+  if (statusCode === 401) {
+    return "Please sign in again.";
+  }
+
+  if (statusCode === 403) {
+    return "Your account is not approved for this app.";
+  }
+
+  return fallback;
+}
+
+function createEmptySnapshot() {
+  return {
+    scannedAt: "",
+    sourceUrl: "https://theabcvault.com/shop/",
+    productCount: 0,
+    products: [],
+    metadata: {},
+    storageConfigured: true,
+  };
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [previousSnapshot, setPreviousSnapshot] = useState(null);
+  const [theme, setTheme] = useState(() => getInitialTheme());
+  const [authConfig, setAuthConfig] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [session, setSession] = useState(null);
+  const [appUser, setAppUser] = useState(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [sendingMagicLink, setSendingMagicLink] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
   const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
+  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(AUTO_REFRESH_SECONDS);
   const [countdown, setCountdown] = useState(AUTO_REFRESH_SECONDS);
   const [changeAlert, setChangeAlert] = useState(null);
   const [changeFeed, setChangeFeed] = useState(createEmptyChangeFeed());
@@ -186,11 +293,186 @@ function App() {
   const [hotStorageMessage, setHotStorageMessage] = useState("");
   const [activePage, setActivePage] = useState("listings");
   const [hotFilter, setHotFilter] = useState("All");
+  const [clearingListings, setClearingListings] = useState(false);
+  const [profilePushoverUserKey, setProfilePushoverUserKey] = useState("");
+  const [profileNotificationsEnabled, setProfileNotificationsEnabled] = useState(false);
+  const [profileNotifyInitialLoad, setProfileNotifyInitialLoad] = useState(false);
+  const [profileNotifyAdded, setProfileNotifyAdded] = useState(true);
+  const [profileNotifyChanged, setProfileNotifyChanged] = useState(false);
+  const [profileNotifyRemoved, setProfileNotifyRemoved] = useState(false);
+  const [profileNotifyPurchasable, setProfileNotifyPurchasable] = useState(false);
+  const [profileNotificationsCritical, setProfileNotificationsCritical] = useState(false);
+  const [profileCriticalInitialLoad, setProfileCriticalInitialLoad] = useState(false);
+  const [profileCriticalAdded, setProfileCriticalAdded] = useState(false);
+  const [profileCriticalChanged, setProfileCriticalChanged] = useState(false);
+  const [profileCriticalRemoved, setProfileCriticalRemoved] = useState(false);
+  const [profileCriticalPurchasable, setProfileCriticalPurchasable] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileTestingNotification, setProfileTestingNotification] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
+  const [pushoverConfigured, setPushoverConfigured] = useState(false);
   const loadingRef = useRef(false);
   const dataRef = useRef(null);
   const runScanRef = useRef(null);
+  const supabaseRef = useRef(null);
   const audioContextRef = useRef(null);
   const previousAlertSignatureRef = useRef("");
+  const latestLoadRef = useRef(false);
+
+  const applySnapshotPayload = (payload, previous) => {
+    setPreviousSnapshot(previous);
+    setData(payload);
+    saveSnapshot(payload);
+    setLastCompletedScanAt(payload.scannedAt || new Date().toISOString());
+  };
+
+  const apiFetch = async (url, options = {}) => {
+    const client = supabaseRef.current;
+
+    if (!client) {
+      throw new Error("Authentication is not ready yet.");
+    }
+
+    const {
+      data: { session: activeSession },
+    } = await client.auth.getSession();
+
+    if (!activeSession?.access_token) {
+      throw new Error("Please sign in to continue.");
+    }
+
+    const headers = new Headers(options.headers || {});
+    headers.set("Authorization", `Bearer ${activeSession.access_token}`);
+
+    return fetch(url, {
+      ...options,
+      headers,
+      cache: "no-store",
+    });
+  };
+
+  const loadAppUser = async () => {
+    try {
+      const response = await apiFetch("/api/me");
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw Object.assign(new Error(getAuthErrorMessage(response.status, payload, "Access check failed.")), {
+          statusCode: response.status,
+        });
+      }
+
+      setAppUser(payload.appUser);
+      setProfilePushoverUserKey(payload.appUser?.pushoverUserKey || "");
+      setProfileNotificationsEnabled(Boolean(payload.appUser?.notificationsEnabled));
+      setProfileNotifyInitialLoad(Boolean(payload.appUser?.notifyInitialLoad));
+      setProfileNotifyAdded(Boolean(payload.appUser?.notifyAdded));
+      setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
+      setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
+      setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
+      setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
+      setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
+      setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
+      setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
+      setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
+      setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setPushoverConfigured(Boolean(payload.pushoverConfigured));
+      setAuthError("");
+    } catch (loadError) {
+      setAppUser(null);
+      setAuthError(loadError.message || "Access check failed.");
+    }
+  };
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileMessage("");
+
+    try {
+      const response = await apiFetch("/api/me", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          pushoverUserKey: profilePushoverUserKey,
+          notificationsEnabled: profileNotificationsEnabled,
+          notifyInitialLoad: profileNotifyInitialLoad,
+          notifyAdded: profileNotifyAdded,
+          notifyChanged: profileNotifyChanged,
+          notifyRemoved: profileNotifyRemoved,
+          notifyPurchasable: profileNotifyPurchasable,
+          notificationsCritical: profileNotificationsCritical,
+          criticalInitialLoad: profileCriticalInitialLoad,
+          criticalAdded: profileCriticalAdded,
+          criticalChanged: profileCriticalChanged,
+          criticalRemoved: profileCriticalRemoved,
+          criticalPurchasable: profileCriticalPurchasable,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to save your profile settings.");
+      }
+
+      setAppUser(payload.appUser);
+      setProfilePushoverUserKey(payload.appUser?.pushoverUserKey || "");
+      setProfileNotificationsEnabled(Boolean(payload.appUser?.notificationsEnabled));
+      setProfileNotifyInitialLoad(Boolean(payload.appUser?.notifyInitialLoad));
+      setProfileNotifyAdded(Boolean(payload.appUser?.notifyAdded));
+      setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
+      setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
+      setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
+      setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
+      setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
+      setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
+      setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
+      setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
+      setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setPushoverConfigured(Boolean(payload.pushoverConfigured));
+      setProfileMessage(
+        payload.appUser?.notificationsEnabled
+          ? "Profile saved. Your Pushover notification settings were updated."
+          : "Profile saved. Pushover notifications are turned off for your account.",
+      );
+    } catch (saveError) {
+      setProfileMessage(saveError.message || "Unable to save your profile settings.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const sendTestNotification = async () => {
+    setProfileTestingNotification(true);
+    setProfileMessage("");
+
+    try {
+      const response = await apiFetch("/api/pushover-test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to send a test notification.");
+      }
+
+      if (payload.appUser) {
+        setAppUser(payload.appUser);
+      }
+      setProfileMessage(payload.message || "Test notification sent.");
+    } catch (testError) {
+      setProfileMessage(testError.message || "Unable to send a test notification.");
+    } finally {
+      setProfileTestingNotification(false);
+    }
+  };
 
   const runScan = async (mode = "manual") => {
     if (loadingRef.current) {
@@ -200,7 +482,7 @@ function App() {
     loadingRef.current = true;
     setLoading(true);
     setError("");
-    setCountdown(AUTO_REFRESH_SECONDS);
+    setCountdown(refreshIntervalSeconds);
     setStatusMessage(
       dataRef.current
         ? mode === "auto"
@@ -211,7 +493,7 @@ function App() {
 
     try {
       const previous = readPreviousSnapshot();
-      const response = await fetch("/api/scan", { cache: "no-store" });
+      const response = await apiFetch(`/api/scan?refresh=1&trigger=${encodeURIComponent(mode)}`);
       const contentType = response.headers.get("content-type") || "";
       let payload;
 
@@ -229,29 +511,29 @@ function App() {
       const currentData = dataRef.current;
       const detectedAt = payload.scannedAt || new Date().toISOString();
 
+      const liveDiff = getServerBackedDiff(payload, currentData?.products || []);
+      const totalChanges = (liveDiff.added?.length || 0) + (liveDiff.removed?.length || 0) + (liveDiff.changed?.length || 0);
+
       if (!currentData?.products?.length) {
-        if (payload.products?.length) {
+        if (liveDiff.added?.length) {
           setChangeFeed((previousFeed) => ({
             ...previousFeed,
             added: mergeChangeItems(
               previousFeed.added,
-              buildAddedItems(payload.products, detectedAt),
+              buildAddedItems(liveDiff.added, detectedAt),
               (item) => item.productId,
             ),
           }));
 
           setChangeAlert({
             detectedAt,
-            added: payload.products.length,
-            removed: 0,
-            changed: 0,
-            totalChanges: payload.products.length,
+            added: liveDiff.added.length,
+            removed: liveDiff.removed?.length || 0,
+            changed: liveDiff.changed?.length || 0,
+            totalChanges,
           });
         }
       } else {
-        const liveDiff = diffSnapshots(currentData.products || [], payload.products || []);
-        const totalChanges = liveDiff.added.length + liveDiff.removed.length + liveDiff.changed.length;
-
         if (totalChanges > 0) {
           setChangeFeed((previousFeed) => ({
             added: mergeChangeItems(
@@ -262,8 +544,9 @@ function App() {
             changed: mergeChangeItems(
               previousFeed.changed,
               liveDiff.changed.map((item) => ({
-                productId: item.productName,
+                productId: item.productId || item.productName,
                 productName: item.productName,
+                productUrl: item.productUrl || null,
                 fields: item.fields,
                 detectedAt,
               })),
@@ -274,6 +557,7 @@ function App() {
               liveDiff.removed.map((item) => ({
                 productId: item.productId || item.productName,
                 productName: item.productName,
+                productUrl: item.productUrl || null,
                 detectedAt,
               })),
               (item) => item.productId,
@@ -292,10 +576,7 @@ function App() {
         }
       }
 
-      setPreviousSnapshot(previous);
-      setData(payload);
-      saveSnapshot(payload);
-      setLastCompletedScanAt(payload.scannedAt || new Date().toISOString());
+      applySnapshotPayload(payload, previous);
       setStatusMessage("Scan complete. Results refreshed.");
     } catch (scanError) {
       setError(scanError.message || "Scan failed.");
@@ -306,8 +587,53 @@ function App() {
     }
   };
 
+  const loadLatestSnapshot = async () => {
+    if (latestLoadRef.current) {
+      return;
+    }
+
+    latestLoadRef.current = true;
+    loadingRef.current = true;
+    setLoading(true);
+    setError("");
+    setStatusMessage("Loading the latest stored scan...");
+
+    try {
+      const previous = readPreviousSnapshot();
+      const response = await apiFetch("/api/scan");
+      const contentType = response.headers.get("content-type") || "";
+      let payload;
+
+      if (contentType.includes("application/json")) {
+        payload = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`Scan endpoint returned non-JSON content: ${text.slice(0, 160)}`);
+      }
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to load the latest stored scan.");
+      }
+
+      applySnapshotPayload(payload, previous);
+      setStatusMessage("Latest stored scan loaded.");
+    } catch (loadError) {
+      setError(loadError.message || "Unable to load the latest stored scan.");
+      setStatusMessage("Unable to load the latest stored scan. Trying a fresh live scan...");
+      latestLoadRef.current = false;
+      loadingRef.current = false;
+      setLoading(false);
+      await runScan("initial-load");
+      return;
+    } finally {
+      latestLoadRef.current = false;
+      loadingRef.current = false;
+      setLoading(false);
+    }
+  };
+
   const loadHotItems = async () => {
-    const response = await fetch("/api/hot-items", { cache: "no-store" });
+    const response = await apiFetch("/api/hot-items");
     const payload = await response.json();
 
     setHotStorageConfigured(Boolean(payload.storageConfigured));
@@ -320,7 +646,7 @@ function App() {
   };
 
   const syncHotItem = async (item, shouldBeHot) => {
-    const response = await fetch("/api/hot-items", {
+    const response = await apiFetch("/api/hot-items", {
       method: shouldBeHot ? "POST" : "DELETE",
       headers: {
         "Content-Type": "application/json",
@@ -352,12 +678,131 @@ function App() {
   };
 
   useEffect(() => {
-    runScan();
+    let isActive = true;
+    let authSubscription;
+
+    async function initializeAuth() {
+      try {
+        const response = await fetch("/api/auth-config", { cache: "no-store" });
+        const payload = await response.json();
+
+        if (!isActive) {
+          return;
+        }
+
+        setAuthConfig(payload);
+
+        if (!payload.configured) {
+          setAuthReady(true);
+          return;
+        }
+
+        const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.57.4");
+
+        if (!isActive) {
+          return;
+        }
+
+        const client = createClient(payload.supabaseUrl, payload.supabaseAnonKey, {
+          auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+          },
+        });
+
+        supabaseRef.current = client;
+
+        const {
+          data: { session: currentSession },
+        } = await client.auth.getSession();
+
+        if (!isActive) {
+          return;
+        }
+
+        setSession(currentSession);
+        setAuthReady(true);
+
+        const { data } = client.auth.onAuthStateChange((_event, nextSession) => {
+          if (!isActive) {
+            return;
+          }
+
+          setSession(nextSession);
+          setAppUser(null);
+          setAuthError("");
+        });
+
+        authSubscription = data.subscription;
+      } catch (setupError) {
+        if (!isActive) {
+          return;
+        }
+
+        setAuthError(setupError.message || "Unable to initialize authentication.");
+        setAuthReady(true);
+      }
+    }
+
+    initializeAuth();
+
+    return () => {
+      isActive = false;
+      authSubscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !authConfig?.configured) {
+      return;
+    }
+
+    if (!session) {
+      setAppUser(null);
+      setData(null);
+      setHotItems([]);
+      setProfilePushoverUserKey("");
+      setProfileNotificationsEnabled(false);
+      setProfileNotifyInitialLoad(false);
+      setProfileNotifyAdded(true);
+      setProfileNotifyChanged(false);
+      setProfileNotifyRemoved(false);
+      setProfileNotifyPurchasable(false);
+      setProfileNotificationsCritical(false);
+      setProfileCriticalInitialLoad(false);
+      setProfileCriticalAdded(false);
+      setProfileCriticalChanged(false);
+      setProfileCriticalRemoved(false);
+      setProfileCriticalPurchasable(false);
+      setProfileTestingNotification(false);
+      setProfileMessage("");
+      return;
+    }
+
+    loadAppUser();
+  }, [authReady, authConfig, session]);
+
+  useEffect(() => {
+    if (!authReady || !authConfig?.configured || !session || !appUser) {
+      return;
+    }
+
+    loadLatestSnapshot();
     loadHotItems().catch((loadError) => {
       setHotStorageConfigured(false);
       setHotStorageMessage(loadError.message || "Unable to load hot items.");
     });
-  }, []);
+  }, [authReady, authConfig, session, appUser]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage access failures and keep theme switching working.
+    }
+  }, [theme]);
 
   useEffect(() => {
     dataRef.current = data;
@@ -369,7 +814,7 @@ function App() {
 
   useEffect(() => {
     runScanRef.current = runScan;
-  }, [data, loading, changeFeed]);
+  }, [data, loading, changeFeed, refreshIntervalSeconds]);
 
   useEffect(() => {
     if (!changeAlert) {
@@ -385,6 +830,10 @@ function App() {
   }, [changeAlert]);
 
   useEffect(() => {
+    setCountdown(refreshIntervalSeconds);
+  }, [refreshIntervalSeconds]);
+
+  useEffect(() => {
     const intervalId = window.setInterval(() => {
       setCountdown((previousValue) => {
         if (loadingRef.current) {
@@ -395,7 +844,7 @@ function App() {
           if (runScanRef.current) {
             runScanRef.current("auto");
           }
-          return AUTO_REFRESH_SECONDS;
+          return refreshIntervalSeconds;
         }
 
         return previousValue - 1;
@@ -403,7 +852,7 @@ function App() {
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [refreshIntervalSeconds]);
 
   const categories = useMemo(() => {
     if (!data?.products) {
@@ -445,6 +894,14 @@ function App() {
   const hotProducts = useMemo(() => {
     return hotItems;
   }, [hotItems]);
+
+  const notPurchasableProducts = useMemo(() => {
+    return (data?.products || []).filter((item) => !item.isPurchasableFromListingPage);
+  }, [data]);
+
+  const changedOrRemovedItems = useMemo(() => {
+    return [...changeFeed.changed, ...changeFeed.removed];
+  }, [changeFeed]);
 
   const changeCounts = useMemo(
     () => ({
@@ -490,6 +947,183 @@ function App() {
     }
   };
 
+  const clearStoredListings = async () => {
+    if (clearingListings) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Clear all stored listings from the database for testing? The next background or manual scan can add them back.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setClearingListings(true);
+    setError("");
+
+    try {
+      const response = await apiFetch("/api/scan", {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Failed to clear stored listings.");
+      }
+
+      window.localStorage.removeItem(STORAGE_KEY);
+      setPreviousSnapshot(null);
+      setData(createEmptySnapshot());
+      setLastCompletedScanAt("");
+      setChangeFeed(createEmptyChangeFeed());
+      setChangeAlert(null);
+      setStatusMessage(payload.message || "Stored listings cleared.");
+    } catch (clearError) {
+      setError(clearError.message || "Failed to clear stored listings.");
+    } finally {
+      setClearingListings(false);
+    }
+  };
+
+  const sendMagicLink = async (event) => {
+    event.preventDefault();
+
+    if (!supabaseRef.current) {
+      setAuthError("Authentication is not ready yet.");
+      return;
+    }
+
+    const email = authEmail.trim();
+    if (!email) {
+      setAuthError("Enter an email address to continue.");
+      return;
+    }
+
+    setSendingMagicLink(true);
+    setAuthError("");
+
+    try {
+      const { error: signInError } = await supabaseRef.current.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+
+      if (signInError) {
+        throw signInError;
+      }
+
+      setAuthError(`Magic link sent to ${email}. Open it on this device to sign in.`);
+    } catch (signInError) {
+      setAuthError(signInError.message || "Unable to send the magic link.");
+    } finally {
+      setSendingMagicLink(false);
+    }
+  };
+
+  const signOut = async () => {
+    if (!supabaseRef.current) {
+      return;
+    }
+
+    await supabaseRef.current.auth.signOut();
+    setAppUser(null);
+    setSession(null);
+    setData(null);
+    setHotItems([]);
+  };
+
+  if (!authReady) {
+    return html`
+      <main className="app-shell">
+        <section className="hero">
+          <div className="hero-panel auth-panel">
+            <div className="eyebrow">Secure Access</div>
+            <h1>Preparing your secure Toyota-themed workspace</h1>
+            <p className="hero-copy">Checking authentication and access rules before loading the live scanner.</p>
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
+  if (!authConfig?.configured) {
+    return html`
+      <main className="app-shell">
+        <section className="hero">
+          <div className="hero-panel auth-panel">
+            <div className="eyebrow">Auth Setup Needed</div>
+            <h1>Supabase Auth is not connected yet</h1>
+            <p className="hero-copy">
+              Add
+              <code>SUPABASE_URL</code>,
+              <code>SUPABASE_ANON_KEY</code>,
+              and at least one email in
+              <code>ADMIN_EMAILS</code>
+              to finish invite-only access.
+            </p>
+            ${authError ? html`<div className="error-state">${authError}</div>` : null}
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
+  if (!session) {
+    return html`
+      <main className="app-shell">
+        <section className="hero">
+          <div className="hero-panel auth-panel">
+            <div className="eyebrow">Invite-Only Access</div>
+            <h1>Sign in to open the scanner</h1>
+            <p className="hero-copy">
+              Use your approved email address and we will send a magic link. Only emails on the allowlist can enter the
+              app.
+            </p>
+            <form className="auth-form" onSubmit=${sendMagicLink}>
+              <label className="auth-field">
+                <span className="filter-label">Email</span>
+                <input
+                  className="auth-input"
+                  type="email"
+                  value=${authEmail}
+                  onInput=${(event) => setAuthEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  autocomplete="email"
+                />
+              </label>
+              <button className="button button-primary" type="submit" disabled=${sendingMagicLink}>
+                ${sendingMagicLink ? "Sending magic link..." : "Send magic link"}
+              </button>
+            </form>
+            ${authError ? html`<div className="auth-note">${authError}</div>` : null}
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
+  if (!appUser) {
+    return html`
+      <main className="app-shell">
+        <section className="hero">
+          <div className="hero-panel auth-panel">
+            <div className="eyebrow">Checking Access</div>
+            <h1>Validating your access</h1>
+            <p className="hero-copy">
+              Your Supabase session is active. We are now checking whether your email is approved for this app.
+            </p>
+            ${authError ? html`<div className="error-state">${authError}</div>` : null}
+            <button className="button button-secondary" onClick=${signOut}>Sign out</button>
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
   return html`
     <main className="app-shell">
       ${changeAlert
@@ -522,12 +1156,27 @@ function App() {
             <button className="button button-primary" onClick=${runScan} disabled=${loading}>
               ${loading ? "Scanning live HTML..." : "Run fresh scan"}
             </button>
+            <button className="button button-secondary" onClick=${() => setActivePage("profile")}>
+              Profile
+            </button>
+            ${appUser.role === "admin"
+              ? html`
+                  <button
+                    className="button button-secondary"
+                    onClick=${clearStoredListings}
+                    disabled=${clearingListings || loading}
+                  >
+                    ${clearingListings ? "Clearing stored listings..." : "Clear stored listings"}
+                  </button>
+                `
+              : null}
             <button
               className="button button-secondary"
-              onClick=${() => setActivePage(activePage === "listings" ? "hot-manager" : "listings")}
+              onClick=${() => setActivePage(activePage === "hot-manager" ? "listings" : "hot-manager")}
             >
-              ${activePage === "listings" ? "Manage hot items" : "Back to listings"}
+              ${activePage === "hot-manager" ? "Back to listings" : "Manage hot items"}
             </button>
+            <button className="button button-secondary" onClick=${signOut}>Sign out</button>
             <a className="button button-secondary" href="https://theabcvault.com/shop/" target="_blank" rel="noreferrer">
               Open source page
             </a>
@@ -541,11 +1190,25 @@ function App() {
               <strong>Next auto refresh:</strong>
               <span>${loading ? "Waiting for current scan..." : `${countdown}s`}</span>
             </div>
+            <div className="refresh-rate-row">
+              <strong>Refresh rate:</strong>
+              <div className="refresh-rate-group" role="group" aria-label="Auto refresh rate">
+                ${REFRESH_RATE_OPTIONS.map(
+                  (seconds) => html`
+                    <button
+                      className=${`button button-secondary button-small ${refreshIntervalSeconds === seconds ? "refresh-rate-active" : ""}`}
+                      onClick=${() => setRefreshIntervalSeconds(seconds)}
+                    >
+                      ${seconds}s
+                    </button>
+                  `,
+                )}
+              </div>
+            </div>
             <div><strong>Current scan:</strong> ${formatScanTime(data?.scannedAt)}</div>
             <div><strong>Previous snapshot:</strong> ${formatScanTime(previousSnapshot?.scannedAt)}</div>
-            <div><strong>Last completed refresh:</strong> ${formatScanTime(lastCompletedScanAt)}</div>
-            <div><strong>Source:</strong> ${data?.sourceUrl || "https://theabcvault.com/shop/"}</div>
-            <div><strong>Hot item storage:</strong> ${hotStorageConfigured ? "Connected to Postgres" : "Not connected"}</div>
+            <div><strong>Signed in as:</strong> ${appUser.email}</div>
+            <div><strong>Access level:</strong> ${appUser.role}</div>
             ${hotStorageMessage ? html`<div><strong>Hot item note:</strong> ${hotStorageMessage}</div>` : null}
           </div>
         </div>
@@ -554,22 +1217,27 @@ function App() {
           <div className="stat-card">
             <div className="stat-number">${data?.productCount ?? "0"}</div>
             <div className="stat-label">Products currently listed</div>
+            ${renderStatPreview(data?.products || [], "No products in the current snapshot.")}
           </div>
           <div className="stat-card">
             <div className="stat-number">${hotItems.length}</div>
             <div className="stat-label">Hot items</div>
+            ${renderStatPreview(hotProducts, "No hot items yet.")}
           </div>
           <div className="stat-card">
             <div className="stat-number">${notPurchasableCount}</div>
             <div className="stat-label">Not purchasable on listing page</div>
+            ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.")}
           </div>
           <div className="stat-card">
             <div className="stat-number">${changeCounts.added}</div>
             <div className="stat-label">Unread added items</div>
+            ${renderStatPreview(changeFeed.added, "No unread added items.")}
           </div>
           <div className="stat-card">
             <div className="stat-number">${changeCounts.changed + changeCounts.removed}</div>
             <div className="stat-label">Unread changed or removed</div>
+            ${renderStatPreview(changedOrRemovedItems, "No unread changed or removed items.")}
           </div>
         </div>
       </section>
@@ -606,7 +1274,7 @@ function App() {
                               (item) => html`
                                 <li className="change-item-row">
                                   <div className="change-item-content">
-                                    <strong>${item.productName}</strong>
+                                    <strong>${renderLinkedProductName(item)}</strong>
                                     <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
                                   </div>
                                   <button
@@ -634,7 +1302,7 @@ function App() {
                               (item) => html`
                                 <li className="change-item-row">
                                   <div className="change-item-content">
-                                    <strong>${item.productName}</strong>
+                                    <strong>${renderLinkedProductName(item)}</strong>
                                     <div className="change-item-meta">
                                       ${formatScanTime(item.detectedAt)} | ${item.fields
                                         .map((field) => formatChangedFieldLabel(field))
@@ -666,7 +1334,7 @@ function App() {
                               (item) => html`
                                 <li className="change-item-row">
                                   <div className="change-item-content">
-                                    <strong>${item.productName}</strong>
+                                    <strong>${renderLinkedProductName(item)}</strong>
                                     <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
                                   </div>
                                   <button
@@ -687,7 +1355,265 @@ function App() {
             : html`<div className="empty-state">Changes will appear here after later scans detect something new.</div>`}
       </section>
 
-      ${activePage === "hot-manager"
+      ${activePage === "profile"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">Profile</h2>
+                  <p className="section-note">Manage your account preferences and choose how the app looks.</p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("listings")}>
+                  Back to listings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">Account</div>
+                  <h3 className="manager-title">${appUser.email}</h3>
+                  <div className="manager-meta">
+                    <span>Role: ${appUser.role}</span>
+                    <span>Theme: ${theme === "dark" ? "Dark" : "Light"}</span>
+                    <span>Pushover: ${appUser.notificationsEnabled ? "Enabled" : "Disabled"}</span>
+                  </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Appearance</div>
+                  <h3 className="manager-title">Theme settings</h3>
+                  <p className="section-note">Choose the color mode that feels best for your workspace.</p>
+                  <div className="profile-theme-options">
+                    <button
+                      className=${`button button-secondary profile-theme-button ${theme === "light" ? "profile-theme-active" : ""}`}
+                      onClick=${() => setTheme("light")}
+                    >
+                      Light mode
+                    </button>
+                    <button
+                      className=${`button button-secondary profile-theme-button ${theme === "dark" ? "profile-theme-active" : ""}`}
+                      onClick=${() => setTheme("dark")}
+                    >
+                      Dark mode
+                    </button>
+                  </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Alerts</div>
+                  <h3 className="manager-title">Pushover notifications</h3>
+                  <p className="section-note">
+                    Save your personal Pushover User Key here, then turn alerts on if you want a push notification
+                    whenever newly added items are detected.
+                  </p>
+                  <label className="auth-field">
+                    <span className="filter-label">Pushover User Key</span>
+                    <input
+                      className="auth-input"
+                      type="text"
+                      value=${profilePushoverUserKey}
+                      onInput=${(event) => setProfilePushoverUserKey(event.target.value)}
+                      placeholder="uQiRzpo4DXghDmr9QzzfQu27cmVRsG"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label className="profile-toggle-row">
+                    <span>
+                      <strong>Enable Pushover notifications</strong>
+                      <small>Turn all Pushover notifications on or off for your account.</small>
+                    </span>
+                    <button
+                      type="button"
+                      className=${`profile-toggle ${profileNotificationsEnabled ? "profile-toggle-on" : ""}`}
+                      aria-pressed=${profileNotificationsEnabled}
+                      onClick=${() => setProfileNotificationsEnabled((currentValue) => !currentValue)}
+                    >
+                      <span className="profile-toggle-knob"></span>
+                    </button>
+                  </label>
+                  <div className="profile-alert-grid">
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Initial load</strong>
+                        <small>Notify when the first stored scan after a reset loads items.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyInitialLoad ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyInitialLoad}
+                          onClick=${() => setProfileNotifyInitialLoad((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalInitialLoad ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalInitialLoad((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Added after load</strong>
+                        <small>Notify when new items appear after the initial stored load.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyAdded ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyAdded}
+                          onClick=${() => setProfileNotifyAdded((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalAdded ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalAdded((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Changed</strong>
+                        <small>Notify when existing items change details like price or badges.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyChanged ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyChanged}
+                          onClick=${() => setProfileNotifyChanged((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalChanged ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalChanged((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Removed</strong>
+                        <small>Notify when items disappear from the listing.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyRemoved ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyRemoved}
+                          onClick=${() => setProfileNotifyRemoved((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalRemoved ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalRemoved((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Purchasable again</strong>
+                        <small>Notify when an item becomes purchasable from the listing page.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyPurchasable ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyPurchasable}
+                          onClick=${() => setProfileNotifyPurchasable((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalPurchasable ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalPurchasable((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="manager-meta">
+                    <span>Server token: ${pushoverConfigured ? "Configured" : "Missing"}</span>
+                    <span>Your key: ${profilePushoverUserKey.trim() ? "Saved locally in your profile" : "Not saved yet"}</span>
+                  </div>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Last notification sent: ${appUser?.lastNotificationSentAt ? formatScanTime(appUser.lastNotificationSentAt) : "Not sent yet"}</span>
+                    <span>Message: ${formatNotificationMessage(appUser?.lastNotificationMessage)}</span>
+                  </div>
+                  <div className="manager-meta manager-meta-stack notification-audit">
+                    <span>
+                      Last automatic notification attempt:
+                      ${appUser?.lastAutoNotificationAttemptAt ? formatScanTime(appUser.lastAutoNotificationAttemptAt) : "Not attempted yet"}
+                    </span>
+                    <span>Was sent: ${formatBooleanStatus(appUser?.lastAutoNotificationSent)}</span>
+                    <span>
+                      Why skipped / status:
+                      ${appUser?.lastAutoNotificationReason || "No automatic attempt has been recorded yet."}
+                    </span>
+                    <span className="notification-audit-items">
+                      Items included:
+                      ${appUser?.lastAutoNotificationItems || "No automatic notification items recorded yet."}
+                    </span>
+                  </div>
+                  ${!pushoverConfigured
+                    ? html`
+                        <div className="empty-state">
+                          The app-level Pushover token is not configured on the server yet, so alerts will stay off until
+                          <code>PUSHOVER_APP_TOKEN</code> is added to Vercel.
+                        </div>
+                      `
+                    : null}
+                  ${profileMessage ? html`<div className="scan-status">${profileMessage}</div>` : null}
+                  <div className="change-toast-actions">
+                    <button className="button button-primary" onClick=${saveProfile} disabled=${profileSaving}>
+                      ${profileSaving ? "Saving profile..." : "Save notification settings"}
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick=${sendTestNotification}
+                      disabled=${profileTestingNotification || !pushoverConfigured || !appUser?.pushoverUserKey}
+                    >
+                      ${profileTestingNotification ? "Sending test..." : "Send test notification"}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+          `
+        : activePage === "hot-manager"
         ? html`
             <section className="surface manager-surface">
               <div className="surface-header">
@@ -788,7 +1714,6 @@ function App() {
                 <th>Price</th>
                 <th>New</th>
                 <th>Sourced & Certified</th>
-                <th>Button States</th>
                 <th>Purchasable</th>
                 <th>Hot</th>
               </tr>
@@ -801,7 +1726,18 @@ function App() {
                     <td>${item.lineItemNumber}</td>
                     <td className="name-cell">
                       <div className="product-name-wrap">
-                        <span>${item.productName}</span>
+                        ${item.productUrl
+                          ? html`
+                              <a
+                                className="product-link"
+                                href=${item.productUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                ${item.productName}
+                              </a>
+                            `
+                          : html`<span>${item.productName}</span>`}
                         ${isHotItem(hotItems, item.productId || item.productName) ? html`<span className="hot-badge" aria-label="Hot item">🔥</span>` : null}
                       </div>
                     </td>
@@ -810,13 +1746,6 @@ function App() {
                     <td>${item.price}</td>
                     <td>${truthyTag(item.newBadge)}</td>
                     <td>${truthyTag(item.sourcedCertifiedBadge)}</td>
-                    <td>
-                      <div className="button-state-list">
-                        ${item.buttonStatesShown.length
-                          ? item.buttonStatesShown.map((state) => html`<span className="button-state">${state}</span>`)
-                          : html`<span className="button-state">None shown</span>`}
-                      </div>
-                    </td>
                     <td>${truthyTag(item.isPurchasableFromListingPage)}</td>
                     <td>
                       <button className="button button-secondary button-small" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured}>
@@ -835,9 +1764,15 @@ function App() {
               <article className="mobile-card" key=${`mobile-${item.productId || `${item.pageNumber}-${item.lineItemNumber}`}`}>
                 <div className="mobile-card-top">
                     <div>
-                      <div className="mobile-card-kicker">Page ${item.pageNumber} | Item ${item.lineItemNumber}</div>
+                    <div className="mobile-card-kicker">Page ${item.pageNumber} | Item ${item.lineItemNumber}</div>
                     <h3 className="mobile-card-title">
-                      ${item.productName}
+                      ${item.productUrl
+                        ? html`
+                            <a className="product-link" href=${item.productUrl} target="_blank" rel="noreferrer">
+                              ${item.productName}
+                            </a>
+                          `
+                        : item.productName}
                       ${isHotItem(hotItems, item.productId || item.productName) ? html`<span className="hot-badge" aria-label="Hot item">🔥</span>` : null}
                     </h3>
                   </div>
@@ -873,6 +1808,10 @@ function App() {
         <div className="footer-note">
           Fresh runs always hit the live shop endpoint through the server, and the local diff compares only against the
           last successful scan saved in this browser.
+        </div>
+        <div className="footer-note">
+          Testing reset: clearing stored listings empties the saved Postgres snapshot, but scheduled background scans
+          can repopulate the list on the next run.
         </div>
       </section>
           `}
