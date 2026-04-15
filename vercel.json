@@ -47,6 +47,10 @@
       "dest": "/api/pushover-test.js"
     },
     {
+      "src": "/api/server-refresh-settings",
+      "dest": "/api/server-refresh-settings.js"
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.html"
     }

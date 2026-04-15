@@ -311,6 +311,11 @@ function App() {
   const [profileTestingNotification, setProfileTestingNotification] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [pushoverConfigured, setPushoverConfigured] = useState(false);
+  const [serverRefreshSettings, setServerRefreshSettings] = useState(null);
+  const [serverRefreshEnabled, setServerRefreshEnabled] = useState(true);
+  const [serverRefreshMode, setServerRefreshMode] = useState("weekday_1am_et");
+  const [serverRefreshSaving, setServerRefreshSaving] = useState(false);
+  const [serverRefreshMessage, setServerRefreshMessage] = useState("");
   const loadingRef = useRef(false);
   const dataRef = useRef(null);
   const runScanRef = useRef(null);
@@ -645,6 +650,52 @@ function App() {
     }
   };
 
+  const loadServerRefreshSettings = async () => {
+    const response = await apiFetch("/api/server-refresh-settings");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.message || "Unable to load server refresh settings.");
+    }
+
+    setServerRefreshSettings(payload);
+    setServerRefreshEnabled(Boolean(payload.settings?.enabled));
+    setServerRefreshMode(payload.settings?.mode || "weekday_1am_et");
+    setServerRefreshMessage("");
+  };
+
+  const saveServerRefreshSettings = async () => {
+    setServerRefreshSaving(true);
+    setServerRefreshMessage("");
+
+    try {
+      const response = await apiFetch("/api/server-refresh-settings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          enabled: serverRefreshEnabled,
+          mode: serverRefreshMode,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to save server refresh settings.");
+      }
+
+      setServerRefreshSettings(payload);
+      setServerRefreshEnabled(Boolean(payload.settings?.enabled));
+      setServerRefreshMode(payload.settings?.mode || "weekday_1am_et");
+      setServerRefreshMessage("Server refresh settings saved.");
+    } catch (saveError) {
+      setServerRefreshMessage(saveError.message || "Unable to save server refresh settings.");
+    } finally {
+      setServerRefreshSaving(false);
+    }
+  };
+
   const syncHotItem = async (item, shouldBeHot) => {
     const response = await apiFetch("/api/hot-items", {
       method: shouldBeHot ? "POST" : "DELETE",
@@ -777,6 +828,11 @@ function App() {
       setProfileCriticalPurchasable(false);
       setProfileTestingNotification(false);
       setProfileMessage("");
+      setServerRefreshSettings(null);
+      setServerRefreshEnabled(true);
+      setServerRefreshMode("weekday_1am_et");
+      setServerRefreshSaving(false);
+      setServerRefreshMessage("");
       return;
     }
 
@@ -793,6 +849,11 @@ function App() {
       setHotStorageConfigured(false);
       setHotStorageMessage(loadError.message || "Unable to load hot items.");
     });
+    if (appUser.role === "admin") {
+      loadServerRefreshSettings().catch((loadError) => {
+        setServerRefreshMessage(loadError.message || "Unable to load server refresh settings.");
+      });
+    }
   }, [authReady, authConfig, session, appUser]);
 
   useEffect(() => {
@@ -1176,6 +1237,16 @@ function App() {
             >
               ${activePage === "hot-manager" ? "Back to listings" : "Manage hot items"}
             </button>
+            ${appUser.role === "admin"
+              ? html`
+                  <button
+                    className="button button-secondary"
+                    onClick=${() => setActivePage(activePage === "server-refresh" ? "listings" : "server-refresh")}
+                  >
+                    ${activePage === "server-refresh" ? "Back to listings" : "Server refresh"}
+                  </button>
+                `
+              : null}
             <button className="button button-secondary" onClick=${signOut}>Sign out</button>
             <a className="button button-secondary" href="https://theabcvault.com/shop/" target="_blank" rel="noreferrer">
               Open source page
@@ -1607,6 +1678,90 @@ function App() {
                       disabled=${profileTestingNotification || !pushoverConfigured || !appUser?.pushoverUserKey}
                     >
                       ${profileTestingNotification ? "Sending test..." : "Send test notification"}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+          `
+        : activePage === "server-refresh"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">Server Refresh</h2>
+                  <p className="section-note">Admin controls for background Vercel cron scans.</p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("listings")}>
+                  Back to listings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">Server Schedule</div>
+                  <h3 className="manager-title">Background refresh controls</h3>
+                  <label className="profile-toggle-row">
+                    <span>
+                      <strong>Enable server-side refresh</strong>
+                      <small>Turn background Vercel cron scans on or off.</small>
+                    </span>
+                    <button
+                      type="button"
+                      className=${`profile-toggle ${serverRefreshEnabled ? "profile-toggle-on" : ""}`}
+                      aria-pressed=${serverRefreshEnabled}
+                      onClick=${() => setServerRefreshEnabled((currentValue) => !currentValue)}
+                    >
+                      <span className="profile-toggle-knob"></span>
+                    </button>
+                  </label>
+                  <div className="profile-alert-grid">
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Weekdays at 1:00 AM ET</strong>
+                        <small>Runs Monday through Friday once at 1:00 AM America/New_York.</small>
+                      </span>
+                      <button
+                        type="button"
+                        className=${`button button-secondary button-small ${serverRefreshMode === "weekday_1am_et" ? "profile-critical-active" : ""}`}
+                        onClick=${() => setServerRefreshMode("weekday_1am_et")}
+                      >
+                        Select
+                      </button>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Hyper mode</strong>
+                        <small>Closest server-side option on Vercel. Runs every minute, not every 3 seconds.</small>
+                      </span>
+                      <button
+                        type="button"
+                        className=${`button button-secondary button-small ${serverRefreshMode === "hyper_requested" ? "profile-critical-active" : ""}`}
+                        onClick=${() => setServerRefreshMode("hyper_requested")}
+                      >
+                        Select
+                      </button>
+                    </div>
+                  </div>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>
+                      Last server-side refresh:
+                      ${serverRefreshSettings?.lastServerRefresh?.scannedAt
+                        ? formatScanTime(serverRefreshSettings.lastServerRefresh.scannedAt)
+                        : "Not run yet"}
+                    </span>
+                    <span>
+                      Active mode:
+                      ${serverRefreshMode === "hyper_requested" ? "Hyper mode requested" : "Weekdays at 1:00 AM ET"}
+                    </span>
+                    <span>
+                      Platform limit:
+                      ${serverRefreshSettings?.limitations?.hyperModeExplanation || "Vercel cron jobs run at a minimum of once per minute."}
+                    </span>
+                  </div>
+                  ${serverRefreshMessage ? html`<div className="scan-status">${serverRefreshMessage}</div>` : null}
+                  <div className="change-toast-actions">
+                    <button className="button button-primary" onClick=${saveServerRefreshSettings} disabled=${serverRefreshSaving}>
+                      ${serverRefreshSaving ? "Saving schedule..." : "Save server refresh settings"}
                     </button>
                   </div>
                 </article>
