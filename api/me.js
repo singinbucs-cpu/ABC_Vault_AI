@@ -32,12 +32,14 @@ module.exports = async (req, res) => {
       const notifyChanged = Boolean(body.notifyChanged);
       const notifyRemoved = Boolean(body.notifyRemoved);
       const notifyPurchasable = Boolean(body.notifyPurchasable);
+      const notifyVaultOpen = Boolean(body.notifyVaultOpen);
       const notificationsCritical = Boolean(body.notificationsCritical);
       const criticalInitialLoad = Boolean(body.criticalInitialLoad);
       const criticalAdded = Boolean(body.criticalAdded);
       const criticalChanged = Boolean(body.criticalChanged);
       const criticalRemoved = Boolean(body.criticalRemoved);
       const criticalPurchasable = Boolean(body.criticalPurchasable);
+      const criticalVaultOpen = Boolean(body.criticalVaultOpen);
       const vaultKeyAutoImportEnabled = Boolean(body.vaultKeyAutoImportEnabled);
       const vaultKeyForwardingEmail =
         typeof body.vaultKeyForwardingEmail === "string" ? body.vaultKeyForwardingEmail.trim() : "";
@@ -68,12 +70,14 @@ module.exports = async (req, res) => {
         notifyChanged,
         notifyRemoved,
         notifyPurchasable,
+        notifyVaultOpen,
         notificationsCritical,
         criticalInitialLoad,
         criticalAdded,
         criticalChanged,
         criticalRemoved,
         criticalPurchasable,
+        criticalVaultOpen,
         vaultKeyAutoImportEnabled,
         vaultKeyForwardingEmail,
       });

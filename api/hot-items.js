@@ -7,31 +7,31 @@ const {
 const { requireAppUser } = require("../lib/auth");
 
 module.exports = async (req, res) => {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-
-  const auth = await requireAppUser(req, res);
-  if (!auth) {
-    return;
-  }
-
-  if (!isHotStorageConfigured()) {
-    res.status(200).send(
-      JSON.stringify(
-        {
-          storageConfigured: false,
-          items: [],
-          message:
-            "Hot item storage is not connected yet. Add a Vercel Marketplace Postgres database and its connection env vars to this project.",
-        },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
-
   try {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+
+    const auth = await requireAppUser(req, res);
+    if (!auth) {
+      return;
+    }
+
+    if (!isHotStorageConfigured()) {
+      res.status(200).send(
+        JSON.stringify(
+          {
+            storageConfigured: false,
+            items: [],
+            message:
+              "Hot item storage is not connected yet. Add a Vercel Marketplace Postgres database and its connection env vars to this project.",
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
     if (req.method === "GET") {
       const items = await listHotItems();
       res.status(200).send(JSON.stringify({ storageConfigured: true, items }, null, 2));
@@ -72,7 +72,7 @@ module.exports = async (req, res) => {
       JSON.stringify(
         {
           error: "hot_items_failed",
-          message: error.message,
+          message: error.message || "Unable to load hot items.",
         },
         null,
         2,

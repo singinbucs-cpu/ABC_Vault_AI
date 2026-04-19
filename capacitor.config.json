@@ -1,0 +1,9 @@
+{
+  "appId": "com.trashkatz.abcvaultlivescanner",
+  "appName": "ABC Vault Scanner",
+  "webDir": "mobile-web",
+  "server": {
+    "url": "https://abc-vault-live-scanner.vercel.app",
+    "cleartext": false
+  }
+}

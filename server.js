@@ -150,13 +150,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const rawBody = ["POST", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
       const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
-      await hotItemsHandler(
-        {
-          method: req.method,
-          body: parsedBody,
-        },
-        sendNodeResponse(res),
-      );
+      await hotItemsHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
     } catch (error) {
       sendJson(res, 500, {
         error: "hot_items_failed",

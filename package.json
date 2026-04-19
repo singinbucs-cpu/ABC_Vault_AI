@@ -5,7 +5,11 @@
   "main": "server.js",
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:mobile-web": "node scripts/build-mobile-web.mjs",
+    "cap:sync": "npm run build:mobile-web && npx cap sync",
+    "cap:add:ios": "npm run build:mobile-web && npx cap add ios",
+    "cap:open:ios": "npx cap open ios"
   },
   "keywords": [
     "scanner",
@@ -19,5 +23,10 @@
     "@supabase/supabase-js": "^2.103.0",
     "cheerio": "^1.0.0-rc.12",
     "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/ios": "^6.2.1"
   }
 }

@@ -90,6 +90,18 @@ function formatChangedFieldLabel(field) {
   return labels[field] || field;
 }
 
+function formatBooleanText(value) {
+  return value ? "Yes" : "No";
+}
+
+function summarizeChangedFields(fields) {
+  if (!fields?.length) {
+    return "Listing details changed";
+  }
+
+  return fields.map((field) => formatChangedFieldLabel(field)).join(", ");
+}
+
 function readPreviousSnapshot() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -292,6 +304,16 @@ function renderLinkedProductName(item) {
     : html`<span>${item.productName}</span>`;
 }
 
+function renderMetaCard(label, value, extra = null) {
+  return html`
+    <article className="meta-card">
+      <div className="meta-card-label">${label}</div>
+      <div className="meta-card-value">${value}</div>
+      ${extra ? html`<div className="meta-card-extra">${extra}</div>` : null}
+    </article>
+  `;
+}
+
 function getPreviewNames(items, limit = 5) {
   return items
     .map((item) => item?.productName)
@@ -350,11 +372,15 @@ function App() {
   const [session, setSession] = useState(null);
   const [appUser, setAppUser] = useState(null);
   const [authEmail, setAuthEmail] = useState("");
-  const [sendingMagicLink, setSendingMagicLink] = useState(false);
+  const [authCode, setAuthCode] = useState("");
+  const [otpRequested, setOtpRequested] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [magicLinkCooldownSeconds, setMagicLinkCooldownSeconds] = useState(() => getInitialMagicLinkCooldown());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
+  const [vaultKeyCopyMessage, setVaultKeyCopyMessage] = useState("");
   const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
@@ -377,12 +403,14 @@ function App() {
   const [profileNotifyChanged, setProfileNotifyChanged] = useState(false);
   const [profileNotifyRemoved, setProfileNotifyRemoved] = useState(false);
   const [profileNotifyPurchasable, setProfileNotifyPurchasable] = useState(false);
+  const [profileNotifyVaultOpen, setProfileNotifyVaultOpen] = useState(true);
   const [profileNotificationsCritical, setProfileNotificationsCritical] = useState(false);
   const [profileCriticalInitialLoad, setProfileCriticalInitialLoad] = useState(false);
   const [profileCriticalAdded, setProfileCriticalAdded] = useState(false);
   const [profileCriticalChanged, setProfileCriticalChanged] = useState(false);
   const [profileCriticalRemoved, setProfileCriticalRemoved] = useState(false);
   const [profileCriticalPurchasable, setProfileCriticalPurchasable] = useState(false);
+  const [profileCriticalVaultOpen, setProfileCriticalVaultOpen] = useState(false);
   const [profileVaultKeyAutoImportEnabled, setProfileVaultKeyAutoImportEnabled] = useState(false);
   const [profileVaultKeyForwardingEmail, setProfileVaultKeyForwardingEmail] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
@@ -456,12 +484,14 @@ function App() {
       setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
       setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
       setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
+      setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
       setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
       setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
       setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
       setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
       setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
       setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
@@ -493,12 +523,14 @@ function App() {
           notifyChanged: profileNotifyChanged,
           notifyRemoved: profileNotifyRemoved,
           notifyPurchasable: profileNotifyPurchasable,
+          notifyVaultOpen: profileNotifyVaultOpen,
           notificationsCritical: profileNotificationsCritical,
           criticalInitialLoad: profileCriticalInitialLoad,
           criticalAdded: profileCriticalAdded,
           criticalChanged: profileCriticalChanged,
           criticalRemoved: profileCriticalRemoved,
           criticalPurchasable: profileCriticalPurchasable,
+          criticalVaultOpen: profileCriticalVaultOpen,
           vaultKeyAutoImportEnabled: profileVaultKeyAutoImportEnabled,
           vaultKeyForwardingEmail: profileVaultKeyForwardingEmail,
         }),
@@ -518,12 +550,14 @@ function App() {
       setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
       setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
       setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
+      setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
       setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
       setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
       setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
       setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
+      setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
       setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
       setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
@@ -732,7 +766,15 @@ function App() {
 
   const loadHotItems = async () => {
     const response = await apiFetch("/api/hot-items");
-    const payload = await response.json();
+    const contentType = response.headers.get("content-type") || "";
+    let payload;
+
+    if (contentType.includes("application/json")) {
+      payload = await response.json();
+    } else {
+      const text = await response.text();
+      throw new Error(`Hot item endpoint returned non-JSON content: ${text.slice(0, 160)}`);
+    }
 
     setHotStorageConfigured(Boolean(payload.storageConfigured));
     setHotStorageMessage(payload.message || "");
@@ -808,10 +850,19 @@ function App() {
           : {
               productId: item.productId || item.productName,
             },
-      ),
+        ),
     });
 
-    const payload = await response.json();
+    const contentType = response.headers.get("content-type") || "";
+    let payload;
+
+    if (contentType.includes("application/json")) {
+      payload = await response.json();
+    } else {
+      const text = await response.text();
+      throw new Error(`Hot item endpoint returned non-JSON content: ${text.slice(0, 160)}`);
+    }
+
     setHotStorageConfigured(Boolean(payload.storageConfigured));
     setHotStorageMessage(payload.message || "");
     setHotItems(payload.items || []);
@@ -906,6 +957,8 @@ function App() {
       setAppUser(null);
       setData(null);
       setHotItems([]);
+      setAuthCode("");
+      setOtpRequested(false);
       setProfilePushoverUserKey("");
       setProfileNotificationsEnabled(false);
       setProfileNotifyInitialLoad(false);
@@ -913,12 +966,14 @@ function App() {
       setProfileNotifyChanged(false);
       setProfileNotifyRemoved(false);
       setProfileNotifyPurchasable(false);
+      setProfileNotifyVaultOpen(true);
       setProfileNotificationsCritical(false);
       setProfileCriticalInitialLoad(false);
       setProfileCriticalAdded(false);
       setProfileCriticalChanged(false);
       setProfileCriticalRemoved(false);
       setProfileCriticalPurchasable(false);
+      setProfileCriticalVaultOpen(false);
       setProfileVaultKeyAutoImportEnabled(false);
       setProfileVaultKeyForwardingEmail("");
       setProfileTestingNotification(false);
@@ -1152,6 +1207,21 @@ function App() {
     }
   };
 
+  const copyVaultKey = async () => {
+    const key = (appUser?.vaultKeyCode || "").trim();
+    if (!key) {
+      setVaultKeyCopyMessage("No Vault key is stored yet.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(key);
+      setVaultKeyCopyMessage("Vault key copied.");
+    } catch {
+      setVaultKeyCopyMessage("Unable to copy the Vault key on this device.");
+    }
+  };
+
   const sendMagicLink = async (event) => {
     event.preventDefault();
 
@@ -1161,7 +1231,7 @@ function App() {
     }
 
     if (magicLinkCooldownSeconds > 0) {
-      setAuthError(`Please wait ${magicLinkCooldownSeconds}s before requesting another magic link.`);
+      setAuthError(`Please wait ${magicLinkCooldownSeconds}s before requesting another one-time code.`);
       return;
     }
 
@@ -1171,14 +1241,14 @@ function App() {
       return;
     }
 
-    setSendingMagicLink(true);
+    setSendingOtp(true);
     setAuthError("");
 
     try {
       const { error: signInError } = await supabaseRef.current.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: APP_BASE_URL,
+          shouldCreateUser: false,
         },
       });
 
@@ -1194,9 +1264,11 @@ function App() {
         // Ignore storage issues and still allow sign-in.
       }
 
-      setAuthError(`Magic link sent to ${email}. Open it on this device to sign in.`);
+      setOtpRequested(true);
+      setAuthCode("");
+      setAuthError(`One-time code sent to ${email}. Enter the code from your email to sign in.`);
     } catch (signInError) {
-      const message = signInError.message || "Unable to send the magic link.";
+      const message = signInError.message || "Unable to send the one-time code.";
       if (message.toLowerCase().includes("rate limit")) {
         try {
           const nextAllowedAt = Date.now() + MAGIC_LINK_COOLDOWN_SECONDS * 1000;
@@ -1205,12 +1277,57 @@ function App() {
         } catch {
           // Ignore storage issues and still surface the error.
         }
-        setAuthError("Too many magic-link requests were sent. Please wait about a minute and try again.");
+        setAuthError("Too many code requests were sent. Please wait about a minute and try again.");
       } else {
         setAuthError(message);
       }
     } finally {
-      setSendingMagicLink(false);
+      setSendingOtp(false);
+    }
+  };
+
+  const verifyEmailCode = async (event) => {
+    event.preventDefault();
+
+    if (!supabaseRef.current) {
+      setAuthError("Authentication is not ready yet.");
+      return;
+    }
+
+    const email = authEmail.trim();
+    const code = authCode.trim();
+
+    if (!email) {
+      setAuthError("Enter your email address first.");
+      return;
+    }
+
+    if (!code) {
+      setAuthError("Enter the one-time code from your email.");
+      return;
+    }
+
+    setVerifyingOtp(true);
+    setAuthError("");
+
+    try {
+      const { error: verifyError } = await supabaseRef.current.auth.verifyOtp({
+        email,
+        token: code,
+        type: "email",
+      });
+
+      if (verifyError) {
+        throw verifyError;
+      }
+
+      setAuthCode("");
+      setOtpRequested(false);
+      setAuthError("");
+    } catch (verifyError) {
+      setAuthError(verifyError.message || "Unable to verify the one-time code.");
+    } finally {
+      setVerifyingOtp(false);
     }
   };
 
@@ -1236,6 +1353,18 @@ function App() {
 
     return () => window.clearInterval(timerId);
   }, [magicLinkCooldownSeconds]);
+
+  useEffect(() => {
+    if (!vaultKeyCopyMessage) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setVaultKeyCopyMessage("");
+    }, 2400);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [vaultKeyCopyMessage]);
 
   const signOut = async () => {
     if (!supabaseRef.current) {
@@ -1289,12 +1418,12 @@ function App() {
     return html`
       <main className="app-shell">
         <section className="hero">
-          <div className="hero-panel auth-panel">
+          <div className="hero-panel auth-panel" role="region" aria-labelledby="sign-in-title">
             <div className="eyebrow">Invite-Only Access</div>
-            <h1>Sign in to open the scanner</h1>
+            <h1 id="sign-in-title">Sign in to open the scanner</h1>
             <p className="hero-copy">
-              Use your approved email address and we will send a magic link. Only emails on the allowlist can enter the
-              app.
+              Use your approved email address and we will send a one-time passcode. Only emails on the allowlist can enter
+              the app.
             </p>
             <form className="auth-form" onSubmit=${sendMagicLink}>
               <label className="auth-field">
@@ -1306,17 +1435,47 @@ function App() {
                   onInput=${(event) => setAuthEmail(event.target.value)}
                   placeholder="you@example.com"
                   autocomplete="email"
+                  inputMode="email"
+                  aria-required="true"
+                  aria-invalid=${Boolean(authError)}
+                  enterKeyHint="send"
                 />
               </label>
-              <button className="button button-primary" type="submit" disabled=${sendingMagicLink || magicLinkCooldownSeconds > 0}>
-                ${sendingMagicLink
-                  ? "Sending magic link..."
+              <button className="button button-primary" type="submit" disabled=${sendingOtp || magicLinkCooldownSeconds > 0}>
+                ${sendingOtp
+                  ? "Sending code..."
                   : magicLinkCooldownSeconds > 0
                   ? `Try again in ${magicLinkCooldownSeconds}s`
-                  : "Send magic link"}
+                  : otpRequested
+                  ? "Resend code"
+                  : "Send code"}
               </button>
             </form>
-            ${authError ? html`<div className="auth-note">${authError}</div>` : null}
+            ${otpRequested
+              ? html`
+                  <form className="auth-form" onSubmit=${verifyEmailCode}>
+                    <label className="auth-field">
+                      <span className="filter-label">One-time code</span>
+                      <input
+                        className="auth-input"
+                        type="text"
+                        inputmode="numeric"
+                        value=${authCode}
+                        onInput=${(event) => setAuthCode(event.target.value)}
+                        placeholder="123456"
+                        autocomplete="one-time-code"
+                        aria-required="true"
+                        aria-invalid=${Boolean(authError)}
+                        enterKeyHint="done"
+                      />
+                    </label>
+                    <button className="button button-primary" type="submit" disabled=${verifyingOtp}>
+                      ${verifyingOtp ? "Verifying code..." : "Verify code"}
+                    </button>
+                  </form>
+                `
+              : null}
+            ${authError ? html`<div className="auth-note" role="status" aria-live="polite">${authError}</div>` : null}
           </div>
         </section>
       </main>
@@ -1342,11 +1501,12 @@ function App() {
   }
 
   return html`
-    <main className="app-shell">
+    <main className="app-shell" aria-busy=${loading}>
+      <a className="skip-link" href="#current-listings">Skip to current listings</a>
       ${changeAlert
         ? html`
-            <div className="change-toast" role="status" aria-live="polite">
-              <button className="change-toast-close" onClick=${() => setChangeAlert(null)} aria-label="Close alert">
+            <div className="change-toast" role="alert" aria-live="assertive" aria-atomic="true">
+              <button className="change-toast-close" type="button" onClick=${() => setChangeAlert(null)} aria-label="Close alert">
                 Close
               </button>
               <div className="change-toast-title">Changes detected in the latest scan</div>
@@ -1355,65 +1515,44 @@ function App() {
                 ${changeAlert.added} added, ${changeAlert.changed} changed, ${changeAlert.removed} removed.
               </div>
               <div className="change-toast-actions">
-                <button className="button button-secondary" onClick=${openChanges}>View changes</button>
-                <button className="button button-primary" onClick=${clearAllChanges}>Mark as read</button>
+                <button className="button button-secondary" type="button" onClick=${openChanges}>View changes</button>
+                <button className="button button-primary" type="button" onClick=${clearAllChanges}>Mark as read</button>
               </div>
             </div>
           `
         : null}
-      <section className="hero">
-        <div className="hero-panel">
+      <section className="hero" aria-label="Scanner overview">
+        <div className="hero-panel" role="region" aria-labelledby="dashboard-title">
           <div className="eyebrow">Fresh HTML scan + local diff memory</div>
-          <h1>ABC Vault listing tracker</h1>
+          <h1 id="dashboard-title">ABC Vault listing tracker</h1>
           <p className="hero-copy">
             This app runs a live server-side scan of the current shop HTML, converts visible listing data into a
             structured table, and compares the newest result against the last snapshot stored in this browser.
           </p>
           <div className="hero-actions">
-            <button className="button button-primary" onClick=${runScan} disabled=${loading}>
+            <button className="button button-primary" type="button" onClick=${runScan} disabled=${loading}>
               ${loading ? "Scanning live HTML..." : "Run fresh scan"}
             </button>
-            <button className="button button-secondary" onClick=${() => setActivePage("profile")}>
+            <button className="button button-secondary" type="button" onClick=${() => setActivePage("profile")}>
               Profile
             </button>
             ${appUser.role === "admin"
               ? html`
-                  <button
-                    className="button button-secondary"
-                    onClick=${clearStoredListings}
-                    disabled=${clearingListings || loading}
-                  >
-                    ${clearingListings ? "Clearing stored listings..." : "Clear stored listings"}
+                  <button className="button button-secondary" type="button" onClick=${() => setActivePage("settings")}>
+                    Settings
                   </button>
                 `
               : null}
-            <button
-              className="button button-secondary"
-              onClick=${() => setActivePage(activePage === "hot-manager" ? "listings" : "hot-manager")}
-            >
-              ${activePage === "hot-manager" ? "Back to listings" : "Manage hot items"}
-            </button>
-            ${appUser.role === "admin"
-              ? html`
-                  <button
-                    className="button button-secondary"
-                    onClick=${() => setActivePage(activePage === "server-refresh" ? "listings" : "server-refresh")}
-                  >
-                    ${activePage === "server-refresh" ? "Back to listings" : "Server refresh"}
-                  </button>
-                `
-              : null}
-            <button className="button button-secondary" onClick=${signOut}>Sign out</button>
             <a className="button button-secondary" href="https://theabcvault.com/shop/" target="_blank" rel="noreferrer">
               Open source page
             </a>
           </div>
           <div className="scan-meta">
-            <div className=${`scan-status ${loading ? "scan-status-running" : "scan-status-idle"}`}>
+            <div className=${`scan-status ${loading ? "scan-status-running" : "scan-status-idle"}`} role="status" aria-live="polite">
               <span className="scan-status-dot"></span>
               <span>${statusMessage}</span>
             </div>
-            <div className="countdown-row">
+            <div className="countdown-row" aria-live="polite">
               <strong>Next auto refresh:</strong>
               <span>
                 ${!autoRefreshEnabled ? "Paused" : loading ? "Waiting for current scan..." : `${countdown}s`}
@@ -1426,7 +1565,9 @@ function App() {
                   (seconds) => html`
                     <button
                       className=${`button button-secondary button-small ${refreshIntervalSeconds === seconds ? "refresh-rate-active" : ""}`}
+                      type="button"
                       onClick=${() => setRefreshIntervalSeconds(seconds)}
+                      aria-pressed=${refreshIntervalSeconds === seconds}
                     >
                       ${seconds}s
                     </button>
@@ -1439,51 +1580,74 @@ function App() {
               <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
                 <button
                   className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                  type="button"
                   onClick=${() => {
                     setAutoRefreshEnabled(true);
                     setCountdown(refreshIntervalSeconds);
                   }}
+                  aria-pressed=${autoRefreshEnabled}
                 >
                   Start
                 </button>
                 <button
                   className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                  type="button"
                   onClick=${() => setAutoRefreshEnabled(false)}
+                  aria-pressed=${!autoRefreshEnabled}
                 >
                   Stop
                 </button>
               </div>
             </div>
-            <div><strong>Current scan:</strong> ${formatScanTime(data?.scannedAt)}</div>
-            <div><strong>Previous snapshot:</strong> ${formatScanTime(previousSnapshot?.scannedAt)}</div>
-            <div><strong>Signed in as:</strong> ${appUser.email}</div>
-            <div><strong>Access level:</strong> ${appUser.role}</div>
+            <div className="scan-meta-grid" role="list" aria-label="Scanner summary">
+              ${renderMetaCard("Signed in", appUser.email, `Access level: ${appUser.role}`)}
+              ${renderMetaCard("Current scan", formatScanTime(data?.scannedAt), `Previous snapshot: ${formatScanTime(previousSnapshot?.scannedAt)}`)}
+              ${renderMetaCard(
+                "Latest Vault key",
+                appUser?.vaultKeyCode || "Not stored yet",
+                html`
+                  <div className="vault-key-row">
+                    <span>${appUser?.vaultKeyLastReceivedAt ? formatScanTime(appUser.vaultKeyLastReceivedAt) : "Not received yet"}</span>
+                    <button
+                      className="button button-secondary button-small"
+                      type="button"
+                      onClick=${copyVaultKey}
+                      disabled=${!appUser?.vaultKeyCode}
+                      aria-label="Copy latest Vault key"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                `,
+              )}
+            </div>
+            ${vaultKeyCopyMessage ? html`<div className="scan-status">${vaultKeyCopyMessage}</div>` : null}
             ${hotStorageMessage ? html`<div><strong>Hot item note:</strong> ${hotStorageMessage}</div>` : null}
           </div>
         </div>
 
-        <div className="stats-grid">
-          <div className="stat-card">
+        <div className="stats-grid" role="list" aria-label="Scanner totals">
+          <div className="stat-card" role="listitem">
             <div className="stat-number">${data?.productCount ?? "0"}</div>
             <div className="stat-label">Products currently listed</div>
             ${renderStatPreview(data?.products || [], "No products in the current snapshot.")}
           </div>
-          <div className="stat-card">
+          <div className="stat-card" role="listitem">
             <div className="stat-number">${hotItems.length}</div>
             <div className="stat-label">Hot items</div>
             ${renderStatPreview(hotProducts, "No hot items yet.")}
           </div>
-          <div className="stat-card">
+          <div className="stat-card" role="listitem">
             <div className="stat-number">${notPurchasableCount}</div>
             <div className="stat-label">Not purchasable on listing page</div>
             ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.")}
           </div>
-          <div className="stat-card">
+          <div className="stat-card" role="listitem">
             <div className="stat-number">${changeCounts.added}</div>
             <div className="stat-label">Unread added items</div>
             ${renderStatPreview(changeFeed.added, "No unread added items.")}
           </div>
-          <div className="stat-card">
+          <div className="stat-card" role="listitem">
             <div className="stat-number">${changeCounts.changed + changeCounts.removed}</div>
             <div className="stat-label">Unread changed or removed</div>
             ${renderStatPreview(changedOrRemovedItems, "No unread changed or removed items.")}
@@ -1491,30 +1655,30 @@ function App() {
         </div>
       </section>
 
-      ${error ? html`<section className="surface"><div className="error-state">${error}</div></section>` : null}
+      ${error ? html`<section className="surface"><div className="error-state" role="alert">${error}</div></section>` : null}
 
-      <section className="surface changes-surface" id="what-changed">
+      <section className="surface changes-surface" id="what-changed" role="region" aria-labelledby="what-changed-title">
         <div className="surface-header">
           <div>
-            <h2 className="section-title">What Changed</h2>
+            <h2 className="section-title" id="what-changed-title">What Changed</h2>
             <p className="section-note">New items stay here until the user dismisses them individually or clears a section.</p>
           </div>
           <div className="changes-actions">
-            <button className="button button-secondary" onClick=${() => setChangesCollapsed((value) => !value)}>
+            <button className="button button-secondary" type="button" onClick=${() => setChangesCollapsed((value) => !value)} aria-expanded=${!changesCollapsed} aria-controls="what-changed-panels">
               ${changesCollapsed ? "Expand" : "Collapse"}
             </button>
-            <button className="button button-secondary" onClick=${clearAllChanges}>Mark all as read</button>
+            <button className="button button-secondary" type="button" onClick=${clearAllChanges}>Mark all as read</button>
           </div>
         </div>
         ${changesCollapsed
           ? html`<div className="empty-state">Change inbox collapsed. Expand to review added, changed, and removed items.</div>`
           : changeCounts.added || changeCounts.changed || changeCounts.removed
             ? html`
-                <div className="diff-columns">
+                <div className="diff-columns" id="what-changed-panels">
                   <div className="diff-column">
                     <div className="change-column-header">
                       <h3>Added</h3>
-                      <button className="text-button" onClick=${() => clearChangeSection("added")}>Clear all</button>
+                      <button className="text-button" type="button" onClick=${() => clearChangeSection("added")}>Clear all</button>
                     </div>
                     ${changeFeed.added.length
                       ? html`
@@ -1528,6 +1692,7 @@ function App() {
                                   </div>
                                   <button
                                     className="text-button"
+                                    type="button"
                                     onClick=${() => dismissChangeItem("added", item.productId)}
                                   >
                                     Mark read
@@ -1542,7 +1707,7 @@ function App() {
                   <div className="diff-column">
                     <div className="change-column-header">
                       <h3>Changed</h3>
-                      <button className="text-button" onClick=${() => clearChangeSection("changed")}>Clear all</button>
+                      <button className="text-button" type="button" onClick=${() => clearChangeSection("changed")}>Clear all</button>
                     </div>
                     ${changeFeed.changed.length
                       ? html`
@@ -1553,13 +1718,12 @@ function App() {
                                   <div className="change-item-content">
                                     <strong>${renderLinkedProductName(item)}</strong>
                                     <div className="change-item-meta">
-                                      ${formatScanTime(item.detectedAt)} | ${item.fields
-                                        .map((field) => formatChangedFieldLabel(field))
-                                        .join(", ")}
+                                      ${formatScanTime(item.detectedAt)} | ${summarizeChangedFields(item.fields)}
                                     </div>
                                   </div>
                                   <button
                                     className="text-button"
+                                    type="button"
                                     onClick=${() => dismissChangeItem("changed", item.productId)}
                                   >
                                     Mark read
@@ -1574,7 +1738,7 @@ function App() {
                   <div className="diff-column">
                     <div className="change-column-header">
                       <h3>Removed</h3>
-                      <button className="text-button" onClick=${() => clearChangeSection("removed")}>Clear all</button>
+                      <button className="text-button" type="button" onClick=${() => clearChangeSection("removed")}>Clear all</button>
                     </div>
                     ${changeFeed.removed.length
                       ? html`
@@ -1588,6 +1752,7 @@ function App() {
                                   </div>
                                   <button
                                     className="text-button"
+                                    type="button"
                                     onClick=${() => dismissChangeItem("removed", item.productId)}
                                   >
                                     Mark read
@@ -1883,6 +2048,33 @@ function App() {
                         </button>
                       </div>
                     </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Vault invite</strong>
+                        <small>Notify when CloudMailin reaches the Vault invite email endpoint so you can jump straight into the Vault.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyVaultOpen ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyVaultOpen}
+                          onClick=${() => setProfileNotifyVaultOpen((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalVaultOpen ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalVaultOpen((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   <div className="manager-meta">
                     <span>Server token: ${pushoverConfigured ? "Configured" : "Missing"}</span>
@@ -1932,6 +2124,70 @@ function App() {
               </div>
             </section>
           `
+        : activePage === "settings"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">Settings</h2>
+                  <p className="section-note">Account actions and app management tools live here so the listings page stays focused.</p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("listings")}>
+                  Back to listings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">Account</div>
+                  <h3 className="manager-title">Session</h3>
+                  <p className="section-note">Sign out of your current approved account on this device.</p>
+                  <div className="change-toast-actions">
+                    <button className="button button-secondary" onClick=${signOut}>Sign out</button>
+                  </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Hot Items</div>
+                  <h3 className="manager-title">Manage hot items</h3>
+                  <p className="section-note">Review and remove hot items stored in Postgres.</p>
+                  <div className="change-toast-actions">
+                    <button className="button button-secondary" onClick=${() => setActivePage("hot-manager")}>
+                      Manage hot items
+                    </button>
+                  </div>
+                </article>
+                ${appUser.role === "admin"
+                  ? html`
+                      <article className="manager-card">
+                        <div className="manager-kicker">Admin</div>
+                        <h3 className="manager-title">Server refresh</h3>
+                        <p className="section-note">Manage the background server-side refresh schedule and review the next run.</p>
+                        <div className="change-toast-actions">
+                          <button className="button button-secondary" onClick=${() => setActivePage("server-refresh")}>
+                            Open server refresh
+                          </button>
+                        </div>
+                      </article>
+                      <article className="manager-card">
+                        <div className="manager-kicker">Admin</div>
+                        <h3 className="manager-title">Stored listings</h3>
+                        <p className="section-note">
+                          Clear the stored listings snapshot for testing. The next manual or server refresh can add items back.
+                        </p>
+                        <div className="change-toast-actions">
+                          <button
+                            className="button button-secondary"
+                            onClick=${clearStoredListings}
+                            disabled=${clearingListings || loading}
+                          >
+                            ${clearingListings ? "Clearing stored listings..." : "Clear stored listings"}
+                          </button>
+                        </div>
+                      </article>
+                    `
+                  : null}
+              </div>
+            </section>
+          `
         : activePage === "server-refresh"
         ? html`
             <section className="surface manager-surface">
@@ -1940,8 +2196,8 @@ function App() {
                   <h2 className="section-title">Server Refresh</h2>
                   <p className="section-note">Admin controls for background Vercel cron scans.</p>
                 </div>
-                <button className="button button-secondary" onClick=${() => setActivePage("listings")}>
-                  Back to listings
+                <button className="button button-secondary" onClick=${() => setActivePage("settings")}>
+                  Back to settings
                 </button>
               </div>
               <div className="profile-grid">
@@ -2032,6 +2288,9 @@ function App() {
                   </p>
                   ${hotStorageMessage ? html`<p className="section-note">${hotStorageMessage}</p>` : null}
                 </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("settings")}>
+                  Back to settings
+                </button>
               </div>
               ${hotProducts.length
                 ? html`
@@ -2066,7 +2325,7 @@ function App() {
             <section className="table-shell">
         ${loading
           ? html`
-              <div className="loading-banner">
+              <div className="loading-banner" role="status" aria-live="polite">
                 <div className="loading-banner-title">Live scan in progress</div>
                 <div className="loading-banner-copy">
                   ${data
@@ -2076,7 +2335,7 @@ function App() {
               </div>
             `
           : null}
-        <div className="table-toolbar">
+        <div className="table-toolbar" id="current-listings">
           <div>
             <h2 className="section-title">Current Listings</h2>
             <p className="section-note">
@@ -2155,7 +2414,7 @@ function App() {
                     <td>${truthyTag(item.sourcedCertifiedBadge)}</td>
                     <td>${truthyTag(item.isPurchasableFromListingPage)}</td>
                     <td>
-                      <button className="button button-secondary button-small" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured}>
+                      <button className="button button-secondary button-small" type="button" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured} aria-label=${`${isHotItem(hotItems, item.productId || item.productName) ? "Remove" : "Mark"} ${item.productName} hot`}>
                         ${isHotItem(hotItems, item.productId || item.productName) ? "Remove hot" : "Mark hot"}
                       </button>
                     </td>
@@ -2170,7 +2429,7 @@ function App() {
             (item) => html`
               <article className="mobile-card" key=${`mobile-${item.productId || `${item.pageNumber}-${item.lineItemNumber}`}`}>
                 <div className="mobile-card-top">
-                    <div>
+                  <div>
                     <div className="mobile-card-kicker">Page ${item.pageNumber} | Item ${item.lineItemNumber}</div>
                     <h3 className="mobile-card-title">
                       ${item.productUrl
@@ -2200,11 +2459,11 @@ function App() {
                   </div>
                   <div className="mobile-field">
                     <span className="mobile-field-label">Purchasable</span>
-                    <span>${item.isPurchasableFromListingPage ? "Yes" : "No"}</span>
+                    <span>${formatBooleanText(item.isPurchasableFromListingPage)}</span>
                   </div>
                 </div>
                 <div className="mobile-card-actions">
-                  <button className="button button-secondary button-small" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured}>
+                  <button className="button button-secondary button-small" type="button" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured} aria-label=${`${isHotItem(hotItems, item.productId || item.productName) ? "Remove" : "Mark"} ${item.productName} hot`}>
                     ${isHotItem(hotItems, item.productId || item.productName) ? "Remove hot" : "Mark hot"}
                   </button>
                 </div>
