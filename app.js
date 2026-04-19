@@ -102,6 +102,18 @@ function summarizeChangedFields(fields) {
   return fields.map((field) => formatChangedFieldLabel(field)).join(", ");
 }
 
+function getVaultStatusDisplay(status) {
+  if (status === "closed") {
+    return { label: "Closed", tone: "tag-no", icon: "🔒" };
+  }
+
+  if (status === "open") {
+    return { label: "Open", tone: "tag-yes", icon: "🔓" };
+  }
+
+  return { label: "Unknown", tone: "tag-neutral", icon: "❔" };
+}
+
 function readPreviousSnapshot() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -404,6 +416,7 @@ function App() {
   const [profileNotifyRemoved, setProfileNotifyRemoved] = useState(false);
   const [profileNotifyPurchasable, setProfileNotifyPurchasable] = useState(false);
   const [profileNotifyVaultOpen, setProfileNotifyVaultOpen] = useState(true);
+  const [profileNotifyVaultClosed, setProfileNotifyVaultClosed] = useState(true);
   const [profileNotificationsCritical, setProfileNotificationsCritical] = useState(false);
   const [profileCriticalInitialLoad, setProfileCriticalInitialLoad] = useState(false);
   const [profileCriticalAdded, setProfileCriticalAdded] = useState(false);
@@ -411,6 +424,7 @@ function App() {
   const [profileCriticalRemoved, setProfileCriticalRemoved] = useState(false);
   const [profileCriticalPurchasable, setProfileCriticalPurchasable] = useState(false);
   const [profileCriticalVaultOpen, setProfileCriticalVaultOpen] = useState(false);
+  const [profileCriticalVaultClosed, setProfileCriticalVaultClosed] = useState(false);
   const [profileVaultKeyAutoImportEnabled, setProfileVaultKeyAutoImportEnabled] = useState(false);
   const [profileVaultKeyForwardingEmail, setProfileVaultKeyForwardingEmail] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
@@ -485,6 +499,7 @@ function App() {
       setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
       setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
       setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
+      setProfileNotifyVaultClosed(Boolean(payload.appUser?.notifyVaultClosed));
       setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
       setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
       setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
@@ -492,6 +507,7 @@ function App() {
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
       setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
+      setProfileCriticalVaultClosed(Boolean(payload.appUser?.criticalVaultClosed));
       setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
       setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
@@ -524,6 +540,7 @@ function App() {
           notifyRemoved: profileNotifyRemoved,
           notifyPurchasable: profileNotifyPurchasable,
           notifyVaultOpen: profileNotifyVaultOpen,
+          notifyVaultClosed: profileNotifyVaultClosed,
           notificationsCritical: profileNotificationsCritical,
           criticalInitialLoad: profileCriticalInitialLoad,
           criticalAdded: profileCriticalAdded,
@@ -531,6 +548,7 @@ function App() {
           criticalRemoved: profileCriticalRemoved,
           criticalPurchasable: profileCriticalPurchasable,
           criticalVaultOpen: profileCriticalVaultOpen,
+          criticalVaultClosed: profileCriticalVaultClosed,
           vaultKeyAutoImportEnabled: profileVaultKeyAutoImportEnabled,
           vaultKeyForwardingEmail: profileVaultKeyForwardingEmail,
         }),
@@ -551,6 +569,7 @@ function App() {
       setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
       setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
       setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
+      setProfileNotifyVaultClosed(Boolean(payload.appUser?.notifyVaultClosed));
       setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
       setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
       setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
@@ -558,6 +577,7 @@ function App() {
       setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
       setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
       setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
+      setProfileCriticalVaultClosed(Boolean(payload.appUser?.criticalVaultClosed));
       setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
       setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
       setPushoverConfigured(Boolean(payload.pushoverConfigured));
@@ -967,6 +987,7 @@ function App() {
       setProfileNotifyRemoved(false);
       setProfileNotifyPurchasable(false);
       setProfileNotifyVaultOpen(true);
+      setProfileNotifyVaultClosed(true);
       setProfileNotificationsCritical(false);
       setProfileCriticalInitialLoad(false);
       setProfileCriticalAdded(false);
@@ -974,6 +995,7 @@ function App() {
       setProfileCriticalRemoved(false);
       setProfileCriticalPurchasable(false);
       setProfileCriticalVaultOpen(false);
+      setProfileCriticalVaultClosed(false);
       setProfileVaultKeyAutoImportEnabled(false);
       setProfileVaultKeyForwardingEmail("");
       setProfileTestingNotification(false);
@@ -1122,6 +1144,10 @@ function App() {
   const changedOrRemovedItems = useMemo(() => {
     return [...changeFeed.changed, ...changeFeed.removed];
   }, [changeFeed]);
+
+  const vaultStatus = data?.metadata?.vaultStatus?.status || "unknown";
+  const vaultStatusDisplay = getVaultStatusDisplay(vaultStatus);
+  const vaultStatusCheckedAt = data?.metadata?.vaultStatus?.checkedAt || data?.scannedAt || "";
 
   const changeCounts = useMemo(
     () => ({
@@ -1523,7 +1549,21 @@ function App() {
         : null}
       <section className="hero" aria-label="Scanner overview">
         <div className="hero-panel" role="region" aria-labelledby="dashboard-title">
-          <div className="eyebrow">Fresh HTML scan + local diff memory</div>
+          <div className="hero-topline">
+            <div className="eyebrow">Fresh HTML scan + local diff memory</div>
+            <div
+              className=${`vault-status-banner vault-status-${vaultStatus}`}
+              role="status"
+              aria-live="polite"
+              aria-label=${`Vault status ${vaultStatusDisplay.label}. Last checked ${formatScanTime(vaultStatusCheckedAt)}`}
+            >
+              <span className="vault-status-icon" aria-hidden="true">${vaultStatusDisplay.icon}</span>
+              <div className="vault-status-content">
+                <span className="vault-status-label">Vault ${vaultStatusDisplay.label}</span>
+                <span className="vault-status-time">Checked ${formatScanTime(vaultStatusCheckedAt)}</span>
+              </div>
+            </div>
+          </div>
           <h1 id="dashboard-title">ABC Vault listing tracker</h1>
           <p className="hero-copy">
             This app runs a live server-side scan of the current shop HTML, converts visible listing data into a
@@ -1533,12 +1573,27 @@ function App() {
             <button className="button button-primary" type="button" onClick=${runScan} disabled=${loading}>
               ${loading ? "Scanning live HTML..." : "Run fresh scan"}
             </button>
-            <button className="button button-secondary" type="button" onClick=${() => setActivePage("profile")}>
+            <button
+              className=${`button button-secondary ${activePage === "listings" ? "page-nav-active" : ""}`}
+              type="button"
+              onClick=${() => setActivePage("listings")}
+            >
+              Listings
+            </button>
+            <button
+              className=${`button button-secondary ${activePage === "profile" ? "page-nav-active" : ""}`}
+              type="button"
+              onClick=${() => setActivePage("profile")}
+            >
               Profile
             </button>
             ${appUser.role === "admin"
               ? html`
-                  <button className="button button-secondary" type="button" onClick=${() => setActivePage("settings")}>
+                  <button
+                    className=${`button button-secondary ${activePage === "settings" || activePage === "server-refresh" || activePage === "hot-manager" ? "page-nav-active" : ""}`}
+                    type="button"
+                    onClick=${() => setActivePage("settings")}
+                  >
                     Settings
                   </button>
                 `
@@ -1626,148 +1681,156 @@ function App() {
           </div>
         </div>
 
-        <div className="stats-grid" role="list" aria-label="Scanner totals">
-          <div className="stat-card" role="listitem">
-            <div className="stat-number">${data?.productCount ?? "0"}</div>
-            <div className="stat-label">Products currently listed</div>
-            ${renderStatPreview(data?.products || [], "No products in the current snapshot.")}
-          </div>
-          <div className="stat-card" role="listitem">
-            <div className="stat-number">${hotItems.length}</div>
-            <div className="stat-label">Hot items</div>
-            ${renderStatPreview(hotProducts, "No hot items yet.")}
-          </div>
-          <div className="stat-card" role="listitem">
-            <div className="stat-number">${notPurchasableCount}</div>
-            <div className="stat-label">Not purchasable on listing page</div>
-            ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.")}
-          </div>
-          <div className="stat-card" role="listitem">
-            <div className="stat-number">${changeCounts.added}</div>
-            <div className="stat-label">Unread added items</div>
-            ${renderStatPreview(changeFeed.added, "No unread added items.")}
-          </div>
-          <div className="stat-card" role="listitem">
-            <div className="stat-number">${changeCounts.changed + changeCounts.removed}</div>
-            <div className="stat-label">Unread changed or removed</div>
-            ${renderStatPreview(changedOrRemovedItems, "No unread changed or removed items.")}
-          </div>
-        </div>
+        ${activePage === "listings"
+          ? html`
+              <div className="stats-grid" role="list" aria-label="Scanner totals">
+                <div className="stat-card" role="listitem">
+                  <div className="stat-number">${data?.productCount ?? "0"}</div>
+                  <div className="stat-label">Products currently listed</div>
+                  ${renderStatPreview(data?.products || [], "No products in the current snapshot.")}
+                </div>
+                <div className="stat-card" role="listitem">
+                  <div className="stat-number">${hotItems.length}</div>
+                  <div className="stat-label">Hot items</div>
+                  ${renderStatPreview(hotProducts, "No hot items yet.")}
+                </div>
+                <div className="stat-card" role="listitem">
+                  <div className="stat-number">${notPurchasableCount}</div>
+                  <div className="stat-label">Not purchasable on listing page</div>
+                  ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.")}
+                </div>
+                <div className="stat-card" role="listitem">
+                  <div className="stat-number">${changeCounts.added}</div>
+                  <div className="stat-label">Unread added items</div>
+                  ${renderStatPreview(changeFeed.added, "No unread added items.")}
+                </div>
+                <div className="stat-card" role="listitem">
+                  <div className="stat-number">${changeCounts.changed + changeCounts.removed}</div>
+                  <div className="stat-label">Unread changed or removed</div>
+                  ${renderStatPreview(changedOrRemovedItems, "No unread changed or removed items.")}
+                </div>
+              </div>
+            `
+          : null}
       </section>
 
       ${error ? html`<section className="surface"><div className="error-state" role="alert">${error}</div></section>` : null}
 
-      <section className="surface changes-surface" id="what-changed" role="region" aria-labelledby="what-changed-title">
-        <div className="surface-header">
-          <div>
-            <h2 className="section-title" id="what-changed-title">What Changed</h2>
-            <p className="section-note">New items stay here until the user dismisses them individually or clears a section.</p>
-          </div>
-          <div className="changes-actions">
-            <button className="button button-secondary" type="button" onClick=${() => setChangesCollapsed((value) => !value)} aria-expanded=${!changesCollapsed} aria-controls="what-changed-panels">
-              ${changesCollapsed ? "Expand" : "Collapse"}
-            </button>
-            <button className="button button-secondary" type="button" onClick=${clearAllChanges}>Mark all as read</button>
-          </div>
-        </div>
-        ${changesCollapsed
-          ? html`<div className="empty-state">Change inbox collapsed. Expand to review added, changed, and removed items.</div>`
-          : changeCounts.added || changeCounts.changed || changeCounts.removed
-            ? html`
-                <div className="diff-columns" id="what-changed-panels">
-                  <div className="diff-column">
-                    <div className="change-column-header">
-                      <h3>Added</h3>
-                      <button className="text-button" type="button" onClick=${() => clearChangeSection("added")}>Clear all</button>
-                    </div>
-                    ${changeFeed.added.length
-                      ? html`
-                          <ul className="plain-list plain-list-tight">
-                            ${changeFeed.added.map(
-                              (item) => html`
-                                <li className="change-item-row">
-                                  <div className="change-item-content">
-                                    <strong>${renderLinkedProductName(item)}</strong>
-                                    <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
-                                  </div>
-                                  <button
-                                    className="text-button"
-                                    type="button"
-                                    onClick=${() => dismissChangeItem("added", item.productId)}
-                                  >
-                                    Mark read
-                                  </button>
-                                </li>
-                              `,
-                            )}
-                          </ul>
-                        `
-                      : html`<div className="empty-state">No unread added listings.</div>`}
-                  </div>
-                  <div className="diff-column">
-                    <div className="change-column-header">
-                      <h3>Changed</h3>
-                      <button className="text-button" type="button" onClick=${() => clearChangeSection("changed")}>Clear all</button>
-                    </div>
-                    ${changeFeed.changed.length
-                      ? html`
-                          <ul className="plain-list plain-list-tight">
-                            ${changeFeed.changed.map(
-                              (item) => html`
-                                <li className="change-item-row">
-                                  <div className="change-item-content">
-                                    <strong>${renderLinkedProductName(item)}</strong>
-                                    <div className="change-item-meta">
-                                      ${formatScanTime(item.detectedAt)} | ${summarizeChangedFields(item.fields)}
-                                    </div>
-                                  </div>
-                                  <button
-                                    className="text-button"
-                                    type="button"
-                                    onClick=${() => dismissChangeItem("changed", item.productId)}
-                                  >
-                                    Mark read
-                                  </button>
-                                </li>
-                              `,
-                            )}
-                          </ul>
-                        `
-                      : html`<div className="empty-state">No unread field-level changes.</div>`}
-                  </div>
-                  <div className="diff-column">
-                    <div className="change-column-header">
-                      <h3>Removed</h3>
-                      <button className="text-button" type="button" onClick=${() => clearChangeSection("removed")}>Clear all</button>
-                    </div>
-                    ${changeFeed.removed.length
-                      ? html`
-                          <ul className="plain-list plain-list-tight">
-                            ${changeFeed.removed.map(
-                              (item) => html`
-                                <li className="change-item-row">
-                                  <div className="change-item-content">
-                                    <strong>${renderLinkedProductName(item)}</strong>
-                                    <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
-                                  </div>
-                                  <button
-                                    className="text-button"
-                                    type="button"
-                                    onClick=${() => dismissChangeItem("removed", item.productId)}
-                                  >
-                                    Mark read
-                                  </button>
-                                </li>
-                              `,
-                            )}
-                          </ul>
-                        `
-                      : html`<div className="empty-state">No unread removals.</div>`}
-                  </div>
+      ${activePage === "listings"
+        ? html`
+            <section className="surface changes-surface" id="what-changed" role="region" aria-labelledby="what-changed-title">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title" id="what-changed-title">What Changed</h2>
+                  <p className="section-note">New items stay here until the user dismisses them individually or clears a section.</p>
                 </div>
-              `
-            : html`<div className="empty-state">Changes will appear here after later scans detect something new.</div>`}
-      </section>
+                <div className="changes-actions">
+                  <button className="button button-secondary" type="button" onClick=${() => setChangesCollapsed((value) => !value)} aria-expanded=${!changesCollapsed} aria-controls="what-changed-panels">
+                    ${changesCollapsed ? "Expand" : "Collapse"}
+                  </button>
+                  <button className="button button-secondary" type="button" onClick=${clearAllChanges}>Mark all as read</button>
+                </div>
+              </div>
+              ${changesCollapsed
+                ? html`<div className="empty-state">Change inbox collapsed. Expand to review added, changed, and removed items.</div>`
+                : changeCounts.added || changeCounts.changed || changeCounts.removed
+                  ? html`
+                      <div className="diff-columns" id="what-changed-panels">
+                        <div className="diff-column">
+                          <div className="change-column-header">
+                            <h3>Added</h3>
+                            <button className="text-button" type="button" onClick=${() => clearChangeSection("added")}>Clear all</button>
+                          </div>
+                          ${changeFeed.added.length
+                            ? html`
+                                <ul className="plain-list plain-list-tight">
+                                  ${changeFeed.added.map(
+                                    (item) => html`
+                                      <li className="change-item-row">
+                                        <div className="change-item-content">
+                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
+                                        </div>
+                                        <button
+                                          className="text-button"
+                                          type="button"
+                                          onClick=${() => dismissChangeItem("added", item.productId)}
+                                        >
+                                          Mark read
+                                        </button>
+                                      </li>
+                                    `,
+                                  )}
+                                </ul>
+                              `
+                            : html`<div className="empty-state">No unread added listings.</div>`}
+                        </div>
+                        <div className="diff-column">
+                          <div className="change-column-header">
+                            <h3>Changed</h3>
+                            <button className="text-button" type="button" onClick=${() => clearChangeSection("changed")}>Clear all</button>
+                          </div>
+                          ${changeFeed.changed.length
+                            ? html`
+                                <ul className="plain-list plain-list-tight">
+                                  ${changeFeed.changed.map(
+                                    (item) => html`
+                                      <li className="change-item-row">
+                                        <div className="change-item-content">
+                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <div className="change-item-meta">
+                                            ${formatScanTime(item.detectedAt)} | ${summarizeChangedFields(item.fields)}
+                                          </div>
+                                        </div>
+                                        <button
+                                          className="text-button"
+                                          type="button"
+                                          onClick=${() => dismissChangeItem("changed", item.productId)}
+                                        >
+                                          Mark read
+                                        </button>
+                                      </li>
+                                    `,
+                                  )}
+                                </ul>
+                              `
+                            : html`<div className="empty-state">No unread field-level changes.</div>`}
+                        </div>
+                        <div className="diff-column">
+                          <div className="change-column-header">
+                            <h3>Removed</h3>
+                            <button className="text-button" type="button" onClick=${() => clearChangeSection("removed")}>Clear all</button>
+                          </div>
+                          ${changeFeed.removed.length
+                            ? html`
+                                <ul className="plain-list plain-list-tight">
+                                  ${changeFeed.removed.map(
+                                    (item) => html`
+                                      <li className="change-item-row">
+                                        <div className="change-item-content">
+                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
+                                        </div>
+                                        <button
+                                          className="text-button"
+                                          type="button"
+                                          onClick=${() => dismissChangeItem("removed", item.productId)}
+                                        >
+                                          Mark read
+                                        </button>
+                                      </li>
+                                    `,
+                                  )}
+                                </ul>
+                              `
+                            : html`<div className="empty-state">No unread removals.</div>`}
+                        </div>
+                      </div>
+                    `
+                  : html`<div className="empty-state">Changes will appear here after later scans detect something new.</div>`}
+            </section>
+          `
+        : null}
 
       ${activePage === "profile"
         ? html`
@@ -2069,6 +2132,33 @@ function App() {
                             event.preventDefault();
                             event.stopPropagation();
                             setProfileCriticalVaultOpen((currentValue) => !currentValue);
+                          }}
+                        >
+                          Critical
+                        </button>
+                      </div>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Vault opened</strong>
+                        <small>Notify when the live Vault homepage changes from Closed to Open.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${profileNotifyVaultClosed ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${profileNotifyVaultClosed}
+                          onClick=${() => setProfileNotifyVaultClosed((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileCriticalVaultClosed ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileCriticalVaultClosed((currentValue) => !currentValue);
                           }}
                         >
                           Critical
@@ -2486,5 +2576,7 @@ function App() {
 }
 
 createRoot(document.getElementById("root")).render(html`<${App} />`);
+
+
 
 

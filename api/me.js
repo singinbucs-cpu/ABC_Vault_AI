@@ -33,6 +33,7 @@ module.exports = async (req, res) => {
       const notifyRemoved = Boolean(body.notifyRemoved);
       const notifyPurchasable = Boolean(body.notifyPurchasable);
       const notifyVaultOpen = Boolean(body.notifyVaultOpen);
+      const notifyVaultClosed = Boolean(body.notifyVaultClosed);
       const notificationsCritical = Boolean(body.notificationsCritical);
       const criticalInitialLoad = Boolean(body.criticalInitialLoad);
       const criticalAdded = Boolean(body.criticalAdded);
@@ -40,6 +41,7 @@ module.exports = async (req, res) => {
       const criticalRemoved = Boolean(body.criticalRemoved);
       const criticalPurchasable = Boolean(body.criticalPurchasable);
       const criticalVaultOpen = Boolean(body.criticalVaultOpen);
+      const criticalVaultClosed = Boolean(body.criticalVaultClosed);
       const vaultKeyAutoImportEnabled = Boolean(body.vaultKeyAutoImportEnabled);
       const vaultKeyForwardingEmail =
         typeof body.vaultKeyForwardingEmail === "string" ? body.vaultKeyForwardingEmail.trim() : "";
@@ -71,6 +73,7 @@ module.exports = async (req, res) => {
         notifyRemoved,
         notifyPurchasable,
         notifyVaultOpen,
+        notifyVaultClosed,
         notificationsCritical,
         criticalInitialLoad,
         criticalAdded,
@@ -78,6 +81,7 @@ module.exports = async (req, res) => {
         criticalRemoved,
         criticalPurchasable,
         criticalVaultOpen,
+        criticalVaultClosed,
         vaultKeyAutoImportEnabled,
         vaultKeyForwardingEmail,
       });

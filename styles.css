@@ -136,6 +136,15 @@ body::before {
   background: radial-gradient(circle, rgba(235, 10, 30, 0.24), transparent 68%);
 }
 
+.hero-topline {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -148,6 +157,64 @@ body::before {
   font-size: 0.84rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.vault-status-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 10px 28px rgba(17, 17, 17, 0.08);
+}
+
+.vault-status-open {
+  background: rgba(23, 114, 69, 0.12);
+  border-color: rgba(23, 114, 69, 0.26);
+}
+
+.vault-status-closed {
+  background: rgba(167, 109, 20, 0.12);
+  border-color: rgba(167, 109, 20, 0.26);
+}
+
+.vault-status-unknown {
+  background: rgba(91, 96, 104, 0.12);
+  border-color: rgba(91, 96, 104, 0.22);
+}
+
+.vault-status-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 1.2rem;
+}
+
+.vault-status-content {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vault-status-label {
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.vault-status-time {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.3;
 }
 
 .hero h1,
@@ -273,6 +340,12 @@ textarea {
   background: rgba(255, 255, 255, 0.76);
   border-color: var(--line-strong);
   color: var(--text);
+}
+
+.page-nav-active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
 }
 
 .button-small {
@@ -894,6 +967,11 @@ tbody tr:hover td {
   color: var(--warning);
 }
 
+.tag-neutral {
+  background: rgba(91, 96, 104, 0.12);
+  color: var(--muted);
+}
+
 .button-state-list {
   display: flex;
   flex-wrap: wrap;
@@ -1132,6 +1210,16 @@ tbody tr:hover td {
 
   .hero h1 {
     max-width: 9ch;
+  }
+
+  .hero-topline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vault-status-banner {
+    max-width: none;
+    width: 100%;
   }
 
   .hero-actions {
