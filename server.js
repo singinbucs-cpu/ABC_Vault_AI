@@ -5,6 +5,7 @@ const hotItemsHandler = require("./api/hot-items");
 const scanHandler = require("./api/scan");
 const cronScanHandler = require("./api/cron-scan");
 const authConfigHandler = require("./api/auth-config");
+const requestOtpHandler = require("./api/request-otp");
 const meHandler = require("./api/me");
 const meStreamHandler = require("./api/me-stream");
 const pushoverTestHandler = require("./api/pushover-test");
@@ -129,6 +130,20 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "auth_config_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/request-otp") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+      await requestOtpHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "request_otp_failed",
         message: error.message,
       });
     }

@@ -39,6 +39,10 @@
       "dest": "/api/auth-config.js"
     },
     {
+      "src": "/api/request-otp",
+      "dest": "/api/request-otp.js"
+    },
+    {
       "src": "/api/me",
       "dest": "/api/me.js"
     },

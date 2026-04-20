@@ -1554,10 +1554,24 @@ function App() {
     setAuthError("");
 
     try {
+      const prepareResponse = await fetch("/api/request-otp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({ email }),
+      });
+      const preparePayload = await prepareResponse.json().catch(() => ({}));
+
+      if (!prepareResponse.ok) {
+        throw new Error(preparePayload.message || "Unable to prepare your approved account for OTP sign-in.");
+      }
+
       const { error: signInError } = await supabaseRef.current.auth.signInWithOtp({
         email,
         options: {
-          shouldCreateUser: false,
+            shouldCreateUser: false,
         },
       });
 
@@ -1576,20 +1590,24 @@ function App() {
       setOtpRequested(true);
       setAuthCode("");
       setAuthError(`One-time code sent to ${email}. Enter the code from your email to sign in.`);
-    } catch (signInError) {
-      const message = signInError.message || "Unable to send the one-time code.";
-      if (message.toLowerCase().includes("rate limit")) {
+      } catch (signInError) {
+        const message = signInError.message || "Unable to send the one-time code.";
+        if (message.toLowerCase().includes("rate limit")) {
         try {
           const nextAllowedAt = Date.now() + MAGIC_LINK_COOLDOWN_SECONDS * 1000;
           window.localStorage.setItem(MAGIC_LINK_COOLDOWN_KEY, String(nextAllowedAt));
           setMagicLinkCooldownSeconds(MAGIC_LINK_COOLDOWN_SECONDS);
         } catch {
           // Ignore storage issues and still surface the error.
+          }
+          setAuthError("Too many code requests were sent. Please wait about a minute and try again.");
+        } else if (message.toLowerCase().includes("signups not allowed for otp")) {
+          setAuthError(
+            "This email is approved in the app, but Supabase is currently blocking first-time OTP sign-ins. Enable Email signups in Supabase Auth, or add a Supabase service role key so approved users can be provisioned automatically.",
+          );
+        } else {
+          setAuthError(message);
         }
-        setAuthError("Too many code requests were sent. Please wait about a minute and try again.");
-      } else {
-        setAuthError(message);
-      }
     } finally {
       setSendingOtp(false);
     }
