@@ -10,6 +10,7 @@ const APP_BASE_URL = "https://abc-vault-live-scanner.vercel.app/";
 const AUTO_REFRESH_SECONDS = 30;
 const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
 const MAGIC_LINK_COOLDOWN_SECONDS = 60;
+const CELEBRATION_CONFETTI_COUNT = 18;
 
 function createEmptyChangeFeed() {
   return {
@@ -53,25 +54,109 @@ function playNotificationSound(audioContextRef) {
     }
 
     const startAt = audioContext.currentTime;
-    [0, 0.12].forEach((offset, index) => {
+    const playTone = ({ offset = 0, duration = 0.24, type = "triangle", frequency = 440, volume = 0.06, endFrequency = null }) => {
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
+      const filterNode = audioContext.createBiquadFilter();
 
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(index === 0 ? 880 : 1174, startAt + offset);
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(frequency, startAt + offset);
+      if (endFrequency && endFrequency !== frequency) {
+        oscillator.frequency.exponentialRampToValueAtTime(endFrequency, startAt + offset + duration);
+      }
+
+      filterNode.type = "lowpass";
+      filterNode.frequency.setValueAtTime(2100, startAt + offset);
+      filterNode.Q.value = 0.9;
+
       gainNode.gain.setValueAtTime(0.0001, startAt + offset);
-      gainNode.gain.exponentialRampToValueAtTime(0.08, startAt + offset + 0.02);
-      gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + offset + 0.18);
+      gainNode.gain.exponentialRampToValueAtTime(volume, startAt + offset + 0.03);
+      gainNode.gain.exponentialRampToValueAtTime(Math.max(volume * 0.48, 0.0001), startAt + offset + duration * 0.6);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + offset + duration);
 
-      oscillator.connect(gainNode);
+      oscillator.connect(filterNode);
+      filterNode.connect(gainNode);
       gainNode.connect(audioContext.destination);
 
       oscillator.start(startAt + offset);
-      oscillator.stop(startAt + offset + 0.2);
-    });
+      oscillator.stop(startAt + offset + duration + 0.02);
+    };
+
+    const playClink = (offset = 0.2) => {
+      [1320, 1760, 2240].forEach((frequency, index) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        const filterNode = audioContext.createBiquadFilter();
+        const noteOffset = offset + index * 0.016;
+
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, startAt + noteOffset);
+        oscillator.frequency.exponentialRampToValueAtTime(frequency * 0.94, startAt + noteOffset + 0.14);
+
+        filterNode.type = "bandpass";
+        filterNode.frequency.setValueAtTime(frequency, startAt + noteOffset);
+        filterNode.Q.value = 7;
+
+        gainNode.gain.setValueAtTime(0.0001, startAt + noteOffset);
+        gainNode.gain.exponentialRampToValueAtTime(0.048, startAt + noteOffset + 0.008);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + noteOffset + 0.16);
+
+        oscillator.connect(filterNode);
+        filterNode.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        oscillator.start(startAt + noteOffset);
+        oscillator.stop(startAt + noteOffset + 0.18);
+      });
+    };
+
+    playTone({ offset: 0, duration: 0.34, type: "triangle", frequency: 196, endFrequency: 233, volume: 0.06 });
+    playTone({ offset: 0.08, duration: 0.34, type: "triangle", frequency: 246.94, endFrequency: 293.66, volume: 0.05 });
+    playTone({ offset: 0.16, duration: 0.38, type: "triangle", frequency: 392, endFrequency: 493.88, volume: 0.072 });
+    playTone({ offset: 0.24, duration: 0.46, type: "sawtooth", frequency: 587.33, endFrequency: 659.25, volume: 0.04 });
+    playClink(0.26);
   } catch {
     // Ignore browser audio restrictions and keep the app functional.
   }
+}
+
+function parseSseChunks(buffer, onEvent) {
+  const normalizedBuffer = buffer.replace(/\r\n/g, "\n");
+  const events = normalizedBuffer.split("\n\n");
+  const remaining = events.pop() || "";
+
+  events.forEach((rawEvent) => {
+    const lines = rawEvent.split("\n");
+    let eventName = "message";
+    const dataLines = [];
+
+    lines.forEach((line) => {
+      if (!line || line.startsWith(":")) {
+        return;
+      }
+
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim() || "message";
+        return;
+      }
+
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    });
+
+    if (!dataLines.length) {
+      return;
+    }
+
+    try {
+      onEvent(eventName, JSON.parse(dataLines.join("\n")));
+    } catch {
+      // Ignore malformed event payloads and keep the stream alive.
+    }
+  });
+
+  return remaining;
 }
 
 function formatChangedFieldLabel(field) {
@@ -88,6 +173,42 @@ function formatChangedFieldLabel(field) {
   };
 
   return labels[field] || field;
+}
+
+function buildCelebrationConfetti() {
+  return Array.from({ length: CELEBRATION_CONFETTI_COUNT }, (_, index) => ({
+    id: `confetti-${index}`,
+    left: `${5 + (index * 90) / Math.max(CELEBRATION_CONFETTI_COUNT - 1, 1)}%`,
+    delay: `${(index % 6) * 0.08}s`,
+    duration: `${2.2 + (index % 5) * 0.18}s`,
+    rotation: `${(index % 2 === 0 ? 1 : -1) * (18 + (index % 4) * 9)}deg`,
+  }));
+}
+
+function fallbackCopyText(value) {
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.top = "-1000px";
+  textArea.style.left = "-1000px";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, textArea.value.length);
+
+  let copied = false;
+
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  } finally {
+    document.body.removeChild(textArea);
+  }
+
+  return copied;
 }
 
 function formatBooleanText(value) {
@@ -291,11 +412,21 @@ function diffSnapshots(previousProducts, currentProducts) {
 }
 
 function getServerBackedDiff(payload, currentProducts) {
+  const localDiff = diffSnapshots(currentProducts || [], payload?.products || []);
+
   if (payload?.changes) {
+    const serverHasChanges = Boolean(payload.changes.totalChanges);
+    const currentListIsEmpty = !(currentProducts || []).length;
+    const localHasVisibleAdds = Boolean(localDiff.added?.length);
+
+    if (!serverHasChanges && currentListIsEmpty && localHasVisibleAdds) {
+      return localDiff;
+    }
+
     return payload.changes;
   }
 
-  return diffSnapshots(currentProducts || [], payload?.products || []);
+  return localDiff;
 }
 
 function truthyTag(value) {
@@ -391,9 +522,11 @@ function App() {
   const [magicLinkCooldownSeconds, setMagicLinkCooldownSeconds] = useState(() => getInitialMagicLinkCooldown());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
-  const [vaultKeyCopyMessage, setVaultKeyCopyMessage] = useState("");
-  const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
+    const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
+    const [vaultKeyCopyMessage, setVaultKeyCopyMessage] = useState("");
+    const [vaultKeyToast, setVaultKeyToast] = useState(null);
+    const [celebrationBurst, setCelebrationBurst] = useState(null);
+    const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(AUTO_REFRESH_SECONDS);
@@ -479,6 +612,75 @@ function App() {
     });
   };
 
+  const applyAppUserPayload = (payload, options = {}) => {
+    const { syncProfileFields = false } = options;
+    const nextAppUser = payload?.appUser || null;
+
+    setAppUser(nextAppUser);
+    setPushoverConfigured(Boolean(payload?.pushoverConfigured));
+    setVaultEmailConfigured(Boolean(payload?.vaultEmailConfigured));
+    setVaultEmailForwardingAddress(payload?.vaultEmailForwardingAddress || "");
+    setVaultEmailAppUrl(payload?.vaultEmailAppUrl || APP_BASE_URL);
+
+    if (!syncProfileFields || !nextAppUser) {
+      return;
+    }
+
+    setProfilePushoverUserKey(nextAppUser.pushoverUserKey || "");
+    setProfileNotificationsEnabled(Boolean(nextAppUser.notificationsEnabled));
+    setProfileNotifyInitialLoad(Boolean(nextAppUser.notifyInitialLoad));
+    setProfileNotifyAdded(Boolean(nextAppUser.notifyAdded));
+    setProfileNotifyChanged(Boolean(nextAppUser.notifyChanged));
+    setProfileNotifyRemoved(Boolean(nextAppUser.notifyRemoved));
+    setProfileNotifyPurchasable(Boolean(nextAppUser.notifyPurchasable));
+    setProfileNotifyVaultOpen(Boolean(nextAppUser.notifyVaultOpen));
+    setProfileNotifyVaultClosed(Boolean(nextAppUser.notifyVaultClosed));
+    setProfileNotificationsCritical(Boolean(nextAppUser.notificationsCritical));
+    setProfileCriticalInitialLoad(Boolean(nextAppUser.criticalInitialLoad));
+    setProfileCriticalAdded(Boolean(nextAppUser.criticalAdded));
+    setProfileCriticalChanged(Boolean(nextAppUser.criticalChanged));
+    setProfileCriticalRemoved(Boolean(nextAppUser.criticalRemoved));
+    setProfileCriticalPurchasable(Boolean(nextAppUser.criticalPurchasable));
+    setProfileCriticalVaultOpen(Boolean(nextAppUser.criticalVaultOpen));
+    setProfileCriticalVaultClosed(Boolean(nextAppUser.criticalVaultClosed));
+    setProfileVaultKeyAutoImportEnabled(Boolean(nextAppUser.vaultKeyAutoImportEnabled));
+    setProfileVaultKeyForwardingEmail(nextAppUser.vaultKeyForwardingEmail || nextAppUser.email || "");
+  };
+
+    const applyLiveVaultKeyUpdate = (payload) => {
+    const nextVaultKeyCode = payload?.vaultKeyCode || "";
+    const nextVaultKeyLastReceivedAt = payload?.vaultKeyLastReceivedAt || "";
+    const nextVaultKeySourceFrom = payload?.vaultKeySourceFrom || "";
+    const nextVaultKeySourceSubject = payload?.vaultKeySourceSubject || "";
+
+    setAppUser((currentAppUser) => {
+      if (!currentAppUser) {
+        return currentAppUser;
+      }
+
+      return {
+        ...currentAppUser,
+        vaultKeyCode: nextVaultKeyCode,
+        vaultKeyLastReceivedAt: nextVaultKeyLastReceivedAt,
+        vaultKeySourceFrom: nextVaultKeySourceFrom,
+        vaultKeySourceSubject: nextVaultKeySourceSubject,
+      };
+    });
+
+      if (nextVaultKeyCode) {
+        setVaultKeyToast({
+          key: nextVaultKeyCode,
+          receivedAt: nextVaultKeyLastReceivedAt || new Date().toISOString(),
+        });
+        setCelebrationBurst({
+          id: `vault-${Date.now()}`,
+          type: "vault-key",
+          confetti: buildCelebrationConfetti(),
+        });
+        playNotificationSound(audioContextRef);
+      }
+    };
+
   const loadAppUser = async () => {
     try {
       const response = await apiFetch("/api/me");
@@ -490,30 +692,7 @@ function App() {
         });
       }
 
-      setAppUser(payload.appUser);
-      setProfilePushoverUserKey(payload.appUser?.pushoverUserKey || "");
-      setProfileNotificationsEnabled(Boolean(payload.appUser?.notificationsEnabled));
-      setProfileNotifyInitialLoad(Boolean(payload.appUser?.notifyInitialLoad));
-      setProfileNotifyAdded(Boolean(payload.appUser?.notifyAdded));
-      setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
-      setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
-      setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
-      setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
-      setProfileNotifyVaultClosed(Boolean(payload.appUser?.notifyVaultClosed));
-      setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
-      setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
-      setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
-      setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
-      setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
-      setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
-      setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
-      setProfileCriticalVaultClosed(Boolean(payload.appUser?.criticalVaultClosed));
-      setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
-      setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
-      setPushoverConfigured(Boolean(payload.pushoverConfigured));
-      setVaultEmailConfigured(Boolean(payload.vaultEmailConfigured));
-      setVaultEmailForwardingAddress(payload.vaultEmailForwardingAddress || "");
-      setVaultEmailAppUrl(payload.vaultEmailAppUrl || APP_BASE_URL);
+      applyAppUserPayload(payload, { syncProfileFields: true });
       setAuthError("");
     } catch (loadError) {
       setAppUser(null);
@@ -560,30 +739,7 @@ function App() {
         throw new Error(payload.message || "Unable to save your profile settings.");
       }
 
-      setAppUser(payload.appUser);
-      setProfilePushoverUserKey(payload.appUser?.pushoverUserKey || "");
-      setProfileNotificationsEnabled(Boolean(payload.appUser?.notificationsEnabled));
-      setProfileNotifyInitialLoad(Boolean(payload.appUser?.notifyInitialLoad));
-      setProfileNotifyAdded(Boolean(payload.appUser?.notifyAdded));
-      setProfileNotifyChanged(Boolean(payload.appUser?.notifyChanged));
-      setProfileNotifyRemoved(Boolean(payload.appUser?.notifyRemoved));
-      setProfileNotifyPurchasable(Boolean(payload.appUser?.notifyPurchasable));
-      setProfileNotifyVaultOpen(Boolean(payload.appUser?.notifyVaultOpen));
-      setProfileNotifyVaultClosed(Boolean(payload.appUser?.notifyVaultClosed));
-      setProfileNotificationsCritical(Boolean(payload.appUser?.notificationsCritical));
-      setProfileCriticalInitialLoad(Boolean(payload.appUser?.criticalInitialLoad));
-      setProfileCriticalAdded(Boolean(payload.appUser?.criticalAdded));
-      setProfileCriticalChanged(Boolean(payload.appUser?.criticalChanged));
-      setProfileCriticalRemoved(Boolean(payload.appUser?.criticalRemoved));
-      setProfileCriticalPurchasable(Boolean(payload.appUser?.criticalPurchasable));
-      setProfileCriticalVaultOpen(Boolean(payload.appUser?.criticalVaultOpen));
-      setProfileCriticalVaultClosed(Boolean(payload.appUser?.criticalVaultClosed));
-      setProfileVaultKeyAutoImportEnabled(Boolean(payload.appUser?.vaultKeyAutoImportEnabled));
-      setProfileVaultKeyForwardingEmail(payload.appUser?.vaultKeyForwardingEmail || payload.appUser?.email || "");
-      setPushoverConfigured(Boolean(payload.pushoverConfigured));
-      setVaultEmailConfigured(Boolean(payload.vaultEmailConfigured));
-      setVaultEmailForwardingAddress(payload.vaultEmailForwardingAddress || "");
-      setVaultEmailAppUrl(payload.vaultEmailAppUrl || APP_BASE_URL);
+      applyAppUserPayload(payload, { syncProfileFields: true });
       setProfileMessage(
         "Profile saved. Your alert and Vault Key settings were updated.",
       );
@@ -614,7 +770,7 @@ function App() {
       }
 
       if (payload.appUser) {
-        setAppUser(payload.appUser);
+        applyAppUserPayload(payload, { syncProfileFields: false });
       }
       setProfileMessage(payload.message || "Test notification sent.");
     } catch (testError) {
@@ -1029,7 +1185,122 @@ function App() {
         setServerRefreshMessage(loadError.message || "Unable to load server refresh settings.");
       });
     }
-  }, [authReady, authConfig, session, appUser]);
+  }, [authReady, authConfig, session, appUser?.email, appUser?.role]);
+
+  useEffect(() => {
+    if (!authReady || !authConfig?.configured || !session) {
+      return undefined;
+    }
+
+    const refreshAppUserFromServer = async () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      try {
+        const response = await apiFetch("/api/me");
+        const payload = await response.json();
+
+        if (!response.ok) {
+          return;
+        }
+
+        applyAppUserPayload(payload, { syncProfileFields: false });
+      } catch {
+        // Ignore background refresh failures and keep the current session intact.
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      refreshAppUserFromServer();
+    }, 10000);
+
+    return () => window.clearInterval(intervalId);
+  }, [authReady, authConfig, session]);
+
+  useEffect(() => {
+    if (!authReady || !authConfig?.configured || !session) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let reconnectTimeoutId = null;
+    let activeAbortController = null;
+
+    const connectVaultKeyStream = async () => {
+      const client = supabaseRef.current;
+      if (!client || cancelled) {
+        return;
+      }
+
+      try {
+        const {
+          data: { session: activeSession },
+        } = await client.auth.getSession();
+
+        if (!activeSession?.access_token || cancelled) {
+          return;
+        }
+
+        activeAbortController = new AbortController();
+
+        const response = await fetch("/api/me-stream", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${activeSession.access_token}`,
+          },
+          cache: "no-store",
+          signal: activeAbortController.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          throw new Error("Unable to subscribe to live Vault key updates.");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!cancelled) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSseChunks(buffer, (eventName, payload) => {
+            if (eventName === "vault-key-updated") {
+              applyLiveVaultKeyUpdate(payload);
+            }
+          });
+        }
+      } catch (streamError) {
+        if (cancelled || streamError?.name === "AbortError") {
+          return;
+        }
+      } finally {
+        activeAbortController = null;
+
+        if (!cancelled) {
+          reconnectTimeoutId = window.setTimeout(() => {
+            connectVaultKeyStream();
+          }, 1500);
+        }
+      }
+    };
+
+    connectVaultKeyStream();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimeoutId) {
+        window.clearTimeout(reconnectTimeoutId);
+      }
+      if (activeAbortController) {
+        activeAbortController.abort();
+      }
+    };
+  }, [authReady, authConfig, session]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1052,18 +1323,23 @@ function App() {
     runScanRef.current = runScan;
   }, [data, loading, changeFeed, refreshIntervalSeconds, autoRefreshEnabled]);
 
-  useEffect(() => {
-    if (!changeAlert) {
-      previousAlertSignatureRef.current = "";
-      return;
-    }
+    useEffect(() => {
+      if (!changeAlert) {
+        previousAlertSignatureRef.current = "";
+        return;
+      }
 
-    const signature = JSON.stringify(changeAlert);
-    if (signature !== previousAlertSignatureRef.current) {
-      playNotificationSound(audioContextRef);
-      previousAlertSignatureRef.current = signature;
-    }
-  }, [changeAlert]);
+      const signature = JSON.stringify(changeAlert);
+      if (signature !== previousAlertSignatureRef.current) {
+        setCelebrationBurst({
+          id: `changes-${Date.now()}`,
+          type: "change-alert",
+          confetti: buildCelebrationConfetti(),
+        });
+        playNotificationSound(audioContextRef);
+        previousAlertSignatureRef.current = signature;
+      }
+    }, [changeAlert]);
 
   useEffect(() => {
     if (autoRefreshEnabled) {
@@ -1241,10 +1517,17 @@ function App() {
     }
 
     try {
-      await navigator.clipboard.writeText(key);
-      setVaultKeyCopyMessage("Vault key copied.");
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(key);
+        setVaultKeyCopyMessage("Vault key copied.");
+        return;
+      }
+
+      const copied = fallbackCopyText(key);
+      setVaultKeyCopyMessage(copied ? "Vault key copied." : "Unable to copy the Vault key on this device.");
     } catch {
-      setVaultKeyCopyMessage("Unable to copy the Vault key on this device.");
+      const copied = fallbackCopyText(key);
+      setVaultKeyCopyMessage(copied ? "Vault key copied." : "Unable to copy the Vault key on this device.");
     }
   };
 
@@ -1392,6 +1675,30 @@ function App() {
     return () => window.clearTimeout(timeoutId);
   }, [vaultKeyCopyMessage]);
 
+  useEffect(() => {
+    if (!vaultKeyToast) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setVaultKeyToast(null);
+    }, 7000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [vaultKeyToast]);
+
+  useEffect(() => {
+    if (!celebrationBurst) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCelebrationBurst(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [celebrationBurst]);
+
   const signOut = async () => {
     if (!supabaseRef.current) {
       return;
@@ -1527,48 +1834,124 @@ function App() {
   }
 
   return html`
-    <main className="app-shell" aria-busy=${loading}>
-      <a className="skip-link" href="#current-listings">Skip to current listings</a>
-      ${changeAlert
-        ? html`
-            <div className="change-toast" role="alert" aria-live="assertive" aria-atomic="true">
-              <button className="change-toast-close" type="button" onClick=${() => setChangeAlert(null)} aria-label="Close alert">
-                Close
-              </button>
-              <div className="change-toast-title">Changes detected in the latest scan</div>
-              <div className="change-toast-copy">
-                ${changeAlert.totalChanges} update${changeAlert.totalChanges === 1 ? "" : "s"} found:
-                ${changeAlert.added} added, ${changeAlert.changed} changed, ${changeAlert.removed} removed.
-              </div>
-              <div className="change-toast-actions">
-                <button className="button button-secondary" type="button" onClick=${openChanges}>View changes</button>
-                <button className="button button-primary" type="button" onClick=${clearAllChanges}>Mark as read</button>
-              </div>
-            </div>
-          `
-        : null}
+      <main className="app-shell" aria-busy=${loading}>
+        <a className="skip-link" href="#current-listings">Skip to current listings</a>
+        ${celebrationBurst || vaultKeyToast || changeAlert
+          ? html`
+              <section className="notification-overlay" aria-live="assertive" aria-atomic="true">
+                ${celebrationBurst
+                  ? html`
+                      <div className="celebration-layer" aria-hidden="true" key=${celebrationBurst.id}>
+                        <div className="celebration-confetti">
+                          ${celebrationBurst.confetti.map(
+                            (piece, index) => html`
+                              <span
+                                key=${piece.id}
+                                className=${`confetti-piece confetti-tone-${(index % 4) + 1}`}
+                                style=${{
+                                  left: piece.left,
+                                  animationDelay: piece.delay,
+                                  animationDuration: piece.duration,
+                                  "--confetti-rotation": piece.rotation,
+                                }}
+                              ></span>
+                            `,
+                          )}
+                        </div>
+                      </div>
+                    `
+                  : null}
+                <div className="notification-overlay-stage">
+                  ${celebrationBurst
+                    ? html`
+                        <div className="bourbon-cheers" aria-hidden="true">
+                          <div className="glencairn glencairn-left">
+                            <div className="glencairn-bowl">
+                              <div className="glencairn-bourbon"></div>
+                              <div className="glencairn-shine"></div>
+                            </div>
+                            <div className="glencairn-stem"></div>
+                            <div className="glencairn-base"></div>
+                          </div>
+                          <div className="cheers-spark"></div>
+                          <div className="glencairn glencairn-right">
+                            <div className="glencairn-bowl">
+                              <div className="glencairn-bourbon"></div>
+                              <div className="glencairn-shine"></div>
+                            </div>
+                            <div className="glencairn-stem"></div>
+                            <div className="glencairn-base"></div>
+                          </div>
+                        </div>
+                      `
+                    : null}
+                  <div className="notification-spotlight-stack">
+                    ${vaultKeyToast
+                      ? html`
+                          <div className="vault-key-toast" role="alert">
+                            <div className="vault-key-toast-copy">
+                              <div className="vault-key-toast-title">New Vault key received</div>
+                              <div className="vault-key-toast-body">
+                                Vault key ${vaultKeyToast.key} was imported at ${formatScanTime(vaultKeyToast.receivedAt)}.
+                              </div>
+                            </div>
+                            <button
+                              className="change-toast-close"
+                              type="button"
+                              onClick=${() => setVaultKeyToast(null)}
+                              aria-label="Close Vault key alert"
+                            >
+                              Close
+                            </button>
+                          </div>
+                        `
+                      : null}
+                    ${changeAlert
+                      ? html`
+                          <div className="change-toast" role="alert">
+                            <button className="change-toast-close" type="button" onClick=${() => setChangeAlert(null)} aria-label="Close alert">
+                              Close
+                            </button>
+                            <div className="change-toast-title">Changes detected in the latest scan</div>
+                            <div className="change-toast-copy">
+                              ${changeAlert.totalChanges} update${changeAlert.totalChanges === 1 ? "" : "s"} found:
+                              ${changeAlert.added} added, ${changeAlert.changed} changed, ${changeAlert.removed} removed.
+                            </div>
+                            <div className="change-toast-actions">
+                              <button className="button button-secondary" type="button" onClick=${openChanges}>View changes</button>
+                              <button className="button button-primary" type="button" onClick=${clearAllChanges}>Mark as read</button>
+                            </div>
+                          </div>
+                        `
+                      : null}
+                  </div>
+                </div>
+              </section>
+            `
+          : null}
       <section className="hero" aria-label="Scanner overview">
         <div className="hero-panel" role="region" aria-labelledby="dashboard-title">
           <div className="hero-topline">
-            <div className="eyebrow">Fresh HTML scan + local diff memory</div>
-            <div
-              className=${`vault-status-banner vault-status-${vaultStatus}`}
-              role="status"
-              aria-live="polite"
-              aria-label=${`Vault status ${vaultStatusDisplay.label}. Last checked ${formatScanTime(vaultStatusCheckedAt)}`}
-            >
-              <span className="vault-status-icon" aria-hidden="true">${vaultStatusDisplay.icon}</span>
-              <div className="vault-status-content">
-                <span className="vault-status-label">Vault ${vaultStatusDisplay.label}</span>
-                <span className="vault-status-time">Checked ${formatScanTime(vaultStatusCheckedAt)}</span>
+            <h1 id="dashboard-title">ABC Vault listing tracker</h1>
+            <div className="hero-status-stack">
+              <div
+                className=${`vault-status-banner vault-status-${vaultStatus}`}
+                role="status"
+                aria-live="polite"
+                aria-label=${`Vault status ${vaultStatusDisplay.label}. Last checked ${formatScanTime(vaultStatusCheckedAt)}`}
+              >
+                <span className="vault-status-icon" aria-hidden="true">${vaultStatusDisplay.icon}</span>
+                <div className="vault-status-content">
+                  <span className="vault-status-label">Vault ${vaultStatusDisplay.label}</span>
+                  <span className="vault-status-time">Checked ${formatScanTime(vaultStatusCheckedAt)}</span>
+                </div>
+              </div>
+              <div className=${`scan-status ${loading ? "scan-status-running" : "scan-status-idle"} scan-status-compact`} role="status" aria-live="polite">
+                <span className="scan-status-dot"></span>
+                <span>${statusMessage}</span>
               </div>
             </div>
           </div>
-          <h1 id="dashboard-title">ABC Vault listing tracker</h1>
-          <p className="hero-copy">
-            This app runs a live server-side scan of the current shop HTML, converts visible listing data into a
-            structured table, and compares the newest result against the last snapshot stored in this browser.
-          </p>
           <div className="hero-actions">
             <button className="button button-primary" type="button" onClick=${runScan} disabled=${loading}>
               ${loading ? "Scanning live HTML..." : "Run fresh scan"}
@@ -1602,83 +1985,84 @@ function App() {
               Open source page
             </a>
           </div>
-          <div className="scan-meta">
-            <div className=${`scan-status ${loading ? "scan-status-running" : "scan-status-idle"}`} role="status" aria-live="polite">
-              <span className="scan-status-dot"></span>
-              <span>${statusMessage}</span>
-            </div>
-            <div className="countdown-row" aria-live="polite">
-              <strong>Next auto refresh:</strong>
-              <span>
-                ${!autoRefreshEnabled ? "Paused" : loading ? "Waiting for current scan..." : `${countdown}s`}
-              </span>
-            </div>
-            <div className="refresh-rate-row">
-              <strong>Refresh rate:</strong>
-              <div className="refresh-rate-group" role="group" aria-label="Auto refresh rate">
-                ${REFRESH_RATE_OPTIONS.map(
-                  (seconds) => html`
-                    <button
-                      className=${`button button-secondary button-small ${refreshIntervalSeconds === seconds ? "refresh-rate-active" : ""}`}
-                      type="button"
-                      onClick=${() => setRefreshIntervalSeconds(seconds)}
-                      aria-pressed=${refreshIntervalSeconds === seconds}
-                    >
-                      ${seconds}s
-                    </button>
-                  `,
-                )}
-              </div>
-            </div>
-            <div className="refresh-rate-row">
-              <strong>Browser auto refresh:</strong>
-              <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
-                <button
-                  className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
-                  type="button"
-                  onClick=${() => {
-                    setAutoRefreshEnabled(true);
-                    setCountdown(refreshIntervalSeconds);
-                  }}
-                  aria-pressed=${autoRefreshEnabled}
-                >
-                  Start
-                </button>
-                <button
-                  className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
-                  type="button"
-                  onClick=${() => setAutoRefreshEnabled(false)}
-                  aria-pressed=${!autoRefreshEnabled}
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
-            <div className="scan-meta-grid" role="list" aria-label="Scanner summary">
-              ${renderMetaCard("Signed in", appUser.email, `Access level: ${appUser.role}`)}
-              ${renderMetaCard("Current scan", formatScanTime(data?.scannedAt), `Previous snapshot: ${formatScanTime(previousSnapshot?.scannedAt)}`)}
-              ${renderMetaCard(
-                "Latest Vault key",
-                appUser?.vaultKeyCode || "Not stored yet",
-                html`
-                  <div className="vault-key-row">
-                    <span>${appUser?.vaultKeyLastReceivedAt ? formatScanTime(appUser.vaultKeyLastReceivedAt) : "Not received yet"}</span>
-                    <button
-                      className="button button-secondary button-small"
-                      type="button"
-                      onClick=${copyVaultKey}
-                      disabled=${!appUser?.vaultKeyCode}
-                      aria-label="Copy latest Vault key"
-                    >
-                      Copy
-                    </button>
+          ${activePage === "listings"
+            ? html`
+                <div className="scan-meta">
+                  <div className="countdown-row" aria-live="polite">
+                    <strong>Next auto refresh:</strong>
+                    <span>
+                      ${!autoRefreshEnabled ? "Paused" : loading ? "Waiting for current scan..." : `${countdown}s`}
+                    </span>
                   </div>
-                `,
-              )}
-            </div>
-            ${vaultKeyCopyMessage ? html`<div className="scan-status">${vaultKeyCopyMessage}</div>` : null}
-            ${hotStorageMessage ? html`<div><strong>Hot item note:</strong> ${hotStorageMessage}</div>` : null}
-          </div>
+                  <div className="refresh-controls-row">
+                    <div className="refresh-rate-row">
+                      <strong>Refresh rate:</strong>
+                      <div className="refresh-rate-group" role="group" aria-label="Auto refresh rate">
+                        ${REFRESH_RATE_OPTIONS.map(
+                          (seconds) => html`
+                            <button
+                              className=${`button button-secondary button-small ${refreshIntervalSeconds === seconds ? "refresh-rate-active" : ""}`}
+                              type="button"
+                              onClick=${() => setRefreshIntervalSeconds(seconds)}
+                              aria-pressed=${refreshIntervalSeconds === seconds}
+                            >
+                              ${seconds}s
+                            </button>
+                          `,
+                        )}
+                      </div>
+                    </div>
+                    <div className="refresh-rate-row">
+                      <strong>Browser auto refresh:</strong>
+                      <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
+                        <button
+                          className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                          type="button"
+                          onClick=${() => {
+                            setAutoRefreshEnabled(true);
+                            setCountdown(refreshIntervalSeconds);
+                          }}
+                          aria-pressed=${autoRefreshEnabled}
+                        >
+                          Start
+                        </button>
+                        <button
+                          className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                          type="button"
+                          onClick=${() => setAutoRefreshEnabled(false)}
+                          aria-pressed=${!autoRefreshEnabled}
+                        >
+                          Stop
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="scan-meta-grid" role="list" aria-label="Scanner summary">
+                    ${renderMetaCard("Current scan", formatScanTime(data?.scannedAt), `Previous snapshot: ${formatScanTime(previousSnapshot?.scannedAt)}`)}
+                    ${renderMetaCard(
+                      "Latest Vault key",
+                      appUser?.vaultKeyCode || "Not stored yet",
+                      html`
+                        <div className="vault-key-row">
+                          <span>${appUser?.vaultKeyLastReceivedAt ? formatScanTime(appUser.vaultKeyLastReceivedAt) : "Not received yet"}</span>
+                          <button
+                            className="button button-secondary button-small"
+                            type="button"
+                            onClick=${copyVaultKey}
+                            disabled=${!appUser?.vaultKeyCode}
+                            aria-label="Copy latest Vault key"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      `,
+                    )}
+                  </div>
+                  ${vaultKeyCopyMessage ? html`<div className="scan-status">${vaultKeyCopyMessage}</div>` : null}
+                  ${hotStorageMessage ? html`<div><strong>Hot item note:</strong> ${hotStorageMessage}</div>` : null}
+                </div>
+              `
+            : null}
         </div>
 
         ${activePage === "listings"
@@ -1703,11 +2087,6 @@ function App() {
                   <div className="stat-number">${changeCounts.added}</div>
                   <div className="stat-label">Unread added items</div>
                   ${renderStatPreview(changeFeed.added, "No unread added items.")}
-                </div>
-                <div className="stat-card" role="listitem">
-                  <div className="stat-number">${changeCounts.changed + changeCounts.removed}</div>
-                  <div className="stat-label">Unread changed or removed</div>
-                  ${renderStatPreview(changedOrRemovedItems, "No unread changed or removed items.")}
                 </div>
               </div>
             `
@@ -2532,7 +2911,6 @@ function App() {
                       ${isHotItem(hotItems, item.productId || item.productName) ? html`<span className="hot-badge" aria-label="Hot item">🔥</span>` : null}
                     </h3>
                   </div>
-                  ${truthyTag(item.isPurchasableFromListingPage)}
                 </div>
                 <div className="mobile-card-grid">
                   <div className="mobile-field">

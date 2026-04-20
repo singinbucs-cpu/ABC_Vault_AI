@@ -43,6 +43,10 @@
       "dest": "/api/me.js"
     },
     {
+      "src": "/api/me-stream",
+      "dest": "/api/me-stream.js"
+    },
+    {
       "src": "/api/cron-scan",
       "dest": "/api/cron-scan.js"
     },

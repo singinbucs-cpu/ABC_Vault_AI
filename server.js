@@ -6,6 +6,7 @@ const scanHandler = require("./api/scan");
 const cronScanHandler = require("./api/cron-scan");
 const authConfigHandler = require("./api/auth-config");
 const meHandler = require("./api/me");
+const meStreamHandler = require("./api/me-stream");
 const pushoverTestHandler = require("./api/pushover-test");
 const serverRefreshSettingsHandler = require("./api/server-refresh-settings");
 const vaultKeyEmailHandler = require("./api/vault-key-email");
@@ -140,6 +141,19 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "me_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/me-stream") {
+    try {
+      req.query = Object.fromEntries(url.searchParams.entries());
+      await meStreamHandler(req, res);
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "me_stream_failed",
         message: error.message,
       });
     }
