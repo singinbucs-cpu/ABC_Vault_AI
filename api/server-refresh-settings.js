@@ -42,8 +42,8 @@ module.exports = async (req, res) => {
             lastServerRefresh,
             limitations: {
               minimumServerInterval: "1 minute",
-              hyperModeExplanation:
-                "Vercel cron jobs run at a minimum of once per minute. Hyper mode is the closest available server-side option and runs every minute, not every 3 seconds.",
+              schedulingExplanation:
+                "Vercel cron jobs wake the server once per minute. The app uses that minute tick and only runs a stored scan when your selected server refresh interval has elapsed.",
             },
           },
           null,
@@ -57,7 +57,7 @@ module.exports = async (req, res) => {
       const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
       const settings = await updateServerRefreshSettings({
         enabled: body.enabled,
-        mode: body.mode,
+        intervalMinutes: body.intervalMinutes,
       });
       const lastServerRefresh = await getLatestServerRefreshSnapshot();
 
@@ -69,8 +69,8 @@ module.exports = async (req, res) => {
             lastServerRefresh,
             limitations: {
               minimumServerInterval: "1 minute",
-              hyperModeExplanation:
-                "Vercel cron jobs run at a minimum of once per minute. Hyper mode is the closest available server-side option and runs every minute, not every 3 seconds.",
+              schedulingExplanation:
+                "Vercel cron jobs wake the server once per minute. The app uses that minute tick and only runs a stored scan when your selected server refresh interval has elapsed.",
             },
           },
           null,

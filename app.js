@@ -9,6 +9,7 @@ const MAGIC_LINK_COOLDOWN_KEY = "abc-vault-live-scanner:magic-link-cooldown:v1";
 const APP_BASE_URL = "https://abc-vault-live-scanner.vercel.app/";
 const AUTO_REFRESH_SECONDS = 30;
 const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
+const SERVER_REFRESH_INTERVAL_OPTIONS = [1, 5, 10, 30, 60];
 const MAGIC_LINK_COOLDOWN_SECONDS = 60;
 const CELEBRATION_CONFETTI_COUNT = 18;
 
@@ -275,61 +276,30 @@ function formatBooleanStatus(value) {
   return "Not attempted yet";
 }
 
-function formatServerRefreshMode(mode) {
-  return mode === "hyper_requested" ? "Hyper mode requested" : "Weekdays at 1:00 AM ET";
+function formatServerRefreshMode(intervalMinutes) {
+  const numericInterval = Number(intervalMinutes) || 30;
+  return numericInterval >= 60 ? "Every 1 hour" : `Every ${numericInterval} minute${numericInterval === 1 ? "" : "s"}`;
 }
 
-function getNextWeekdayOneAmEtDate() {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-
-  for (let offset = 0; offset < 14; offset += 1) {
-    const candidateUtc = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
-    const parts = Object.fromEntries(
-      formatter
-        .formatToParts(candidateUtc)
-        .filter((part) => part.type !== "literal")
-        .map((part) => [part.type, part.value]),
-    );
-
-    const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(parts.weekday);
-    if (!isWeekday) {
-      continue;
-    }
-
-    const sameDayStillAhead = offset === 0 && (Number(parts.hour) < 1 || (Number(parts.hour) === 1 && Number(parts.minute) === 0));
-    const futureDay = offset > 0;
-
-    if (sameDayStillAhead || futureDay) {
-      return `${parts.month}/${parts.day}/${parts.year} 1:00 AM ET`;
-    }
-  }
-
-  return "Unable to calculate";
-}
-
-function getNextServerRefreshLabel(settings, enabledOverride, modeOverride) {
+function getNextServerRefreshLabel(settings, enabledOverride, intervalOverride) {
   const enabled = typeof enabledOverride === "boolean" ? enabledOverride : Boolean(settings?.settings?.enabled);
-  const mode = modeOverride || settings?.settings?.mode || "weekday_1am_et";
+  const intervalMinutes = Number(intervalOverride || settings?.settings?.intervalMinutes) || 30;
 
   if (!enabled) {
     return "Disabled";
   }
 
-  if (mode === "hyper_requested") {
-    return "Every minute on the next available Vercel cron tick";
+  const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
+  if (!lastServerRefresh) {
+    return "On the next available Vercel cron tick";
   }
 
-  return getNextWeekdayOneAmEtDate();
+  const lastRunAt = new Date(lastServerRefresh).getTime();
+  if (!Number.isFinite(lastRunAt)) {
+    return "On the next available Vercel cron tick";
+  }
+
+  return formatScanTime(new Date(lastRunAt + intervalMinutes * 60 * 1000).toISOString());
 }
 
 function getInitialTheme() {
@@ -569,12 +539,16 @@ function App() {
   const [vaultEmailAppUrl, setVaultEmailAppUrl] = useState(APP_BASE_URL);
   const [serverRefreshSettings, setServerRefreshSettings] = useState(null);
   const [serverRefreshEnabled, setServerRefreshEnabled] = useState(true);
-  const [serverRefreshMode, setServerRefreshMode] = useState("weekday_1am_et");
+  const [serverRefreshIntervalMinutes, setServerRefreshIntervalMinutes] = useState(30);
   const [serverRefreshSaving, setServerRefreshSaving] = useState(false);
   const [serverRefreshMessage, setServerRefreshMessage] = useState("");
   const loadingRef = useRef(false);
   const dataRef = useRef(null);
   const runScanRef = useRef(null);
+  const loadLatestSnapshotRef = useRef(null);
+  const loadServerRefreshSettingsRef = useRef(null);
+  const appUserRef = useRef(null);
+  const lastServerRefreshSeenRef = useRef("");
   const supabaseRef = useRef(null);
   const audioContextRef = useRef(null);
   const previousAlertSignatureRef = useRef("");
@@ -585,6 +559,35 @@ function App() {
     setData(payload);
     saveSnapshot(payload);
     setLastCompletedScanAt(payload.scannedAt || new Date().toISOString());
+  };
+
+  const handleLiveServerRefreshUpdate = (payload) => {
+    const nextServerRefreshScannedAt = payload?.lastServerRefreshScannedAt || payload?.lastServerRefresh?.scannedAt || "";
+
+    if (!nextServerRefreshScannedAt || nextServerRefreshScannedAt === lastServerRefreshSeenRef.current) {
+      return;
+    }
+
+    lastServerRefreshSeenRef.current = nextServerRefreshScannedAt;
+
+    const refreshFromServer = () => {
+      if (loadingRef.current || latestLoadRef.current) {
+        window.setTimeout(refreshFromServer, 1200);
+        return;
+      }
+
+      setStatusMessage("Background server refresh detected. Loading the latest stored scan...");
+
+      if (loadLatestSnapshotRef.current) {
+        loadLatestSnapshotRef.current();
+      }
+
+      if (appUserRef.current?.role === "admin" && loadServerRefreshSettingsRef.current) {
+        loadServerRefreshSettingsRef.current().catch(() => {});
+      }
+    };
+
+    refreshFromServer();
   };
 
   const apiFetch = async (url, options = {}) => {
@@ -652,6 +655,10 @@ function App() {
     const nextVaultKeyLastReceivedAt = payload?.vaultKeyLastReceivedAt || "";
     const nextVaultKeySourceFrom = payload?.vaultKeySourceFrom || "";
     const nextVaultKeySourceSubject = payload?.vaultKeySourceSubject || "";
+    const currentVaultKeyCode = appUserRef.current?.vaultKeyCode || "";
+    const currentVaultKeyLastReceivedAt = appUserRef.current?.vaultKeyLastReceivedAt || "";
+    const didVaultKeyActuallyChange =
+      nextVaultKeyCode !== currentVaultKeyCode || nextVaultKeyLastReceivedAt !== currentVaultKeyLastReceivedAt;
 
     setAppUser((currentAppUser) => {
       if (!currentAppUser) {
@@ -667,7 +674,7 @@ function App() {
       };
     });
 
-      if (nextVaultKeyCode) {
+      if (nextVaultKeyCode && didVaultKeyActuallyChange) {
         setVaultKeyToast({
           key: nextVaultKeyCode,
           receivedAt: nextVaultKeyLastReceivedAt || new Date().toISOString(),
@@ -924,6 +931,9 @@ function App() {
       }
 
       applySnapshotPayload(payload, previous);
+      if (payload?.triggerSource === "vercel-cron" && payload?.scannedAt) {
+        lastServerRefreshSeenRef.current = payload.scannedAt;
+      }
       setStatusMessage("Latest stored scan loaded.");
     } catch (loadError) {
       setError(loadError.message || "Unable to load the latest stored scan.");
@@ -971,7 +981,8 @@ function App() {
 
     setServerRefreshSettings(payload);
     setServerRefreshEnabled(Boolean(payload.settings?.enabled));
-    setServerRefreshMode(payload.settings?.mode || "weekday_1am_et");
+    setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
+    lastServerRefreshSeenRef.current = payload.lastServerRefresh?.scannedAt || lastServerRefreshSeenRef.current;
     setServerRefreshMessage("");
   };
 
@@ -987,7 +998,7 @@ function App() {
         },
         body: JSON.stringify({
           enabled: serverRefreshEnabled,
-          mode: serverRefreshMode,
+          intervalMinutes: serverRefreshIntervalMinutes,
         }),
       });
       const payload = await response.json();
@@ -998,7 +1009,7 @@ function App() {
 
       setServerRefreshSettings(payload);
       setServerRefreshEnabled(Boolean(payload.settings?.enabled));
-      setServerRefreshMode(payload.settings?.mode || "weekday_1am_et");
+      setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
       setServerRefreshMessage("Server refresh settings saved.");
     } catch (saveError) {
       setServerRefreshMessage(saveError.message || "Unable to save server refresh settings.");
@@ -1161,7 +1172,7 @@ function App() {
       setVaultEmailAppUrl(APP_BASE_URL);
       setServerRefreshSettings(null);
       setServerRefreshEnabled(true);
-      setServerRefreshMode("weekday_1am_et");
+      setServerRefreshIntervalMinutes(30);
       setServerRefreshSaving(false);
       setServerRefreshMessage("");
       return;
@@ -1205,6 +1216,7 @@ function App() {
           return;
         }
 
+        handleLiveServerRefreshUpdate(payload);
         applyAppUserPayload(payload, { syncProfileFields: false });
       } catch {
         // Ignore background refresh failures and keep the current session intact.
@@ -1269,7 +1281,12 @@ function App() {
 
           buffer += decoder.decode(value, { stream: true });
           buffer = parseSseChunks(buffer, (eventName, payload) => {
+            if (eventName === "ready" || eventName === "server-refresh-updated") {
+              handleLiveServerRefreshUpdate(payload);
+            }
+
             if (eventName === "vault-key-updated") {
+              handleLiveServerRefreshUpdate(payload);
               applyLiveVaultKeyUpdate(payload);
             }
           });
@@ -1322,6 +1339,18 @@ function App() {
   useEffect(() => {
     runScanRef.current = runScan;
   }, [data, loading, changeFeed, refreshIntervalSeconds, autoRefreshEnabled]);
+
+  useEffect(() => {
+    loadLatestSnapshotRef.current = loadLatestSnapshot;
+  }, [loadLatestSnapshot]);
+
+  useEffect(() => {
+    loadServerRefreshSettingsRef.current = loadServerRefreshSettings;
+  }, [loadServerRefreshSettings]);
+
+  useEffect(() => {
+    appUserRef.current = appUser;
+  }, [appUser]);
 
     useEffect(() => {
       if (!changeAlert) {
@@ -2056,7 +2085,24 @@ function App() {
                     </div>
                   </div>
                   <div className="scan-meta-grid" role="list" aria-label="Scanner summary">
-                    ${renderMetaCard("Current scan", formatScanTime(data?.scannedAt), `Previous snapshot: ${formatScanTime(previousSnapshot?.scannedAt)}`)}
+                    ${renderMetaCard(
+                      "Current scan",
+                      formatScanTime(data?.scannedAt),
+                      html`
+                        <div>Previous: ${formatScanTime(previousSnapshot?.scannedAt)}</div>
+                        <div>
+                          Server: ${
+                            appUser?.role === "admin"
+                              ? getNextServerRefreshLabel(
+                                  serverRefreshSettings,
+                                  serverRefreshEnabled,
+                                  serverRefreshIntervalMinutes,
+                                )
+                              : "Admin only"
+                          }
+                        </div>
+                      `,
+                    )}
                     ${renderMetaCard(
                       "Latest Vault key",
                       appUser?.vaultKeyCode || "Not stored yet",
@@ -2706,32 +2752,29 @@ function App() {
                     </button>
                   </label>
                   <div className="profile-alert-grid">
-                    <div className="profile-toggle-row profile-toggle-card">
-                      <span>
-                        <strong>Weekdays at 1:00 AM ET</strong>
-                        <small>Runs Monday through Friday once at 1:00 AM America/New_York.</small>
-                      </span>
-                      <button
-                        type="button"
-                        className=${`button button-secondary button-small ${serverRefreshMode === "weekday_1am_et" ? "profile-critical-active" : ""}`}
-                        onClick=${() => setServerRefreshMode("weekday_1am_et")}
-                      >
-                        Select
-                      </button>
-                    </div>
-                    <div className="profile-toggle-row profile-toggle-card">
-                      <span>
-                        <strong>Hyper mode</strong>
-                        <small>Closest server-side option on Vercel. Runs every minute, not every 3 seconds.</small>
-                      </span>
-                      <button
-                        type="button"
-                        className=${`button button-secondary button-small ${serverRefreshMode === "hyper_requested" ? "profile-critical-active" : ""}`}
-                        onClick=${() => setServerRefreshMode("hyper_requested")}
-                      >
-                        Select
-                      </button>
-                    </div>
+                    ${SERVER_REFRESH_INTERVAL_OPTIONS.map(
+                      (intervalMinutes) => html`
+                        <div className="profile-toggle-row profile-toggle-card" key=${`server-refresh-${intervalMinutes}`}>
+                          <span>
+                            <strong>${formatServerRefreshMode(intervalMinutes)}</strong>
+                            <small>
+                              ${intervalMinutes === 1
+                                ? "Checks on each available Vercel cron tick."
+                                : `Runs a stored scan when ${intervalMinutes} minutes have passed since the last server refresh.`}
+                            </small>
+                          </span>
+                          <button
+                            type="button"
+                            className=${`button button-secondary button-small ${
+                              serverRefreshIntervalMinutes === intervalMinutes ? "profile-critical-active" : ""
+                            }`}
+                            onClick=${() => setServerRefreshIntervalMinutes(intervalMinutes)}
+                          >
+                            Select
+                          </button>
+                        </div>
+                      `,
+                    )}
                   </div>
                   <div className="manager-meta manager-meta-stack">
                     <span>
@@ -2741,16 +2784,17 @@ function App() {
                         : "Not run yet"}
                     </span>
                     <span>
-                      Active mode:
-                      ${formatServerRefreshMode(serverRefreshMode)}
+                      Active refresh rate:
+                      ${formatServerRefreshMode(serverRefreshIntervalMinutes)}
                     </span>
                     <span>
-                      Next scheduled refresh:
-                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshMode)}
+                      Next eligible refresh:
+                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshIntervalMinutes)}
                     </span>
                     <span>
                       Platform limit:
-                      ${serverRefreshSettings?.limitations?.hyperModeExplanation || "Vercel cron jobs run at a minimum of once per minute."}
+                      ${serverRefreshSettings?.limitations?.schedulingExplanation ||
+                      "Vercel cron jobs wake the server once per minute."}
                     </span>
                   </div>
                   ${serverRefreshMessage ? html`<div className="scan-status">${serverRefreshMessage}</div>` : null}
@@ -2932,26 +2976,9 @@ function App() {
                 </div>
                 <div className="mobile-card-grid">
                   <div className="mobile-field">
-                    <span className="mobile-field-label">Category</span>
-                    <span>${item.category || "Not shown"}</span>
-                  </div>
-                  <div className="mobile-field">
-                    <span className="mobile-field-label">Bottle Size</span>
-                    <span>${item.bottleSizeMl ?? item.bottleSizeDisplay}</span>
-                  </div>
-                  <div className="mobile-field">
-                    <span className="mobile-field-label">Price</span>
-                    <span>${item.price || "Not shown"}</span>
-                  </div>
-                  <div className="mobile-field">
                     <span className="mobile-field-label">Purchasable</span>
                     <span>${formatBooleanText(item.isPurchasableFromListingPage)}</span>
                   </div>
-                </div>
-                <div className="mobile-card-actions">
-                  <button className="button button-secondary button-small" type="button" onClick=${() => toggleHotItem(item)} disabled=${!hotStorageConfigured} aria-label=${`${isHotItem(hotItems, item.productId || item.productName) ? "Remove" : "Mark"} ${item.productName} hot`}>
-                    ${isHotItem(hotItems, item.productId || item.productName) ? "Remove hot" : "Mark hot"}
-                  </button>
                 </div>
               </article>
             `,

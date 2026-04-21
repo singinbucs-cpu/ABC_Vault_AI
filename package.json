@@ -7,6 +7,8 @@
     "dev": "node server.js",
     "start": "node server.js",
     "build:mobile-web": "node scripts/build-mobile-web.mjs",
+    "db:migrate-to-supabase": "node scripts/migrate-postgres.mjs",
+    "db:harden-supabase-rls": "node scripts/harden-supabase-rls.mjs",
     "cap:sync": "npm run build:mobile-web && npx cap sync",
     "cap:add:ios": "npm run build:mobile-web && npx cap add ios",
     "cap:open:ios": "npx cap open ios"

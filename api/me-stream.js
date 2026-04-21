@@ -1,5 +1,6 @@
 const { authenticateRequest } = require("../lib/auth");
 const { getAppUserByEmail } = require("../lib/app-users-db");
+const { getLatestServerRefreshSnapshot } = require("../lib/scan-history-db");
 
 function sendSseEvent(res, eventName, payload) {
   res.write(`event: ${eventName}\n`);
@@ -35,15 +36,18 @@ module.exports = async (req, res) => {
   });
 
   let closed = false;
-  let lastSignature = JSON.stringify({
+  const initialServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+  let lastVaultKeySignature = JSON.stringify({
     vaultKeyCode: auth.appUser?.vaultKeyCode || "",
     vaultKeyLastReceivedAt: auth.appUser?.vaultKeyLastReceivedAt || "",
   });
+  let lastServerRefreshScannedAt = initialServerRefresh?.scannedAt || "";
 
   sendSseEvent(res, "ready", {
     ok: true,
     vaultKeyCode: auth.appUser?.vaultKeyCode || "",
     vaultKeyLastReceivedAt: auth.appUser?.vaultKeyLastReceivedAt || "",
+    lastServerRefreshScannedAt: initialServerRefresh?.scannedAt || "",
   });
 
   const pollForChanges = async () => {
@@ -53,20 +57,34 @@ module.exports = async (req, res) => {
 
     try {
       const latestAppUser = await getAppUserByEmail(auth.user.email);
-      const nextSignature = JSON.stringify({
+      const latestServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+      const nextVaultKeySignature = JSON.stringify({
         vaultKeyCode: latestAppUser?.vaultKeyCode || "",
         vaultKeyLastReceivedAt: latestAppUser?.vaultKeyLastReceivedAt || "",
       });
+      const nextServerRefreshScannedAt = latestServerRefresh?.scannedAt || "";
+      let sentEvent = false;
 
-      if (nextSignature !== lastSignature) {
-        lastSignature = nextSignature;
+      if (nextServerRefreshScannedAt && nextServerRefreshScannedAt !== lastServerRefreshScannedAt) {
+        lastServerRefreshScannedAt = nextServerRefreshScannedAt;
+        sendSseEvent(res, "server-refresh-updated", {
+          lastServerRefreshScannedAt: nextServerRefreshScannedAt,
+        });
+        sentEvent = true;
+      }
+
+      if (nextVaultKeySignature !== lastVaultKeySignature) {
+        lastVaultKeySignature = nextVaultKeySignature;
         sendSseEvent(res, "vault-key-updated", {
           vaultKeyCode: latestAppUser?.vaultKeyCode || "",
           vaultKeyLastReceivedAt: latestAppUser?.vaultKeyLastReceivedAt || "",
           vaultKeySourceFrom: latestAppUser?.vaultKeySourceFrom || "",
           vaultKeySourceSubject: latestAppUser?.vaultKeySourceSubject || "",
         });
-      } else {
+        sentEvent = true;
+      }
+
+      if (!sentEvent) {
         res.write(": keep-alive\n\n");
       }
     } catch (error) {

@@ -15,36 +15,6 @@ function getHeader(req, name) {
   return req.headers[name] || req.headers[loweredName] || "";
 }
 
-function getEasternDateParts(dateLike) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-
-  const parts = Object.fromEntries(
-    formatter
-      .formatToParts(new Date(dateLike))
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
-
-  return {
-    weekday: parts.weekday,
-    year: parts.year,
-    month: parts.month,
-    day: parts.day,
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-    dateKey: `${parts.year}-${parts.month}-${parts.day}`,
-  };
-}
-
 async function shouldRunServerRefresh() {
   const settings = await getServerRefreshSettings();
   const lastServerRefresh = await getLatestServerRefreshSnapshot();
@@ -58,45 +28,47 @@ async function shouldRunServerRefresh() {
     };
   }
 
-  if (settings.mode === "hyper_requested") {
+  const intervalMinutes = Number(settings.intervalMinutes) || 30;
+
+  if (!lastServerRefresh?.scannedAt) {
     return {
       shouldRun: true,
       settings,
       lastServerRefresh,
-      reason: "Hyper mode requested. Running on each available Vercel cron tick (once per minute).",
+      reason: `No previous server-side refresh was found. Running now with the ${intervalMinutes}-minute schedule.`,
     };
   }
 
-  const nowEastern = getEasternDateParts(new Date());
-  const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(nowEastern.weekday);
-  const scheduledMinute = nowEastern.hour === 1 && nowEastern.minute === 0;
+  const lastRunAt = new Date(lastServerRefresh.scannedAt).getTime();
+  if (!Number.isFinite(lastRunAt)) {
+    return {
+      shouldRun: true,
+      settings,
+      lastServerRefresh,
+      reason: `The previous server-side refresh time could not be read. Running now with the ${intervalMinutes}-minute schedule.`,
+    };
+  }
 
-  if (!isWeekday || !scheduledMinute) {
+  const elapsedMilliseconds = Date.now() - lastRunAt;
+  const intervalMilliseconds = intervalMinutes * 60 * 1000;
+
+  if (elapsedMilliseconds < intervalMilliseconds) {
+    const remainingMilliseconds = intervalMilliseconds - elapsedMilliseconds;
+    const remainingMinutes = Math.max(1, Math.ceil(remainingMilliseconds / (60 * 1000)));
+
     return {
       shouldRun: false,
       settings,
       lastServerRefresh,
-      reason: "Waiting for the weekday 1:00 AM America/New_York schedule.",
+      reason: `Waiting for the ${intervalMinutes}-minute server refresh interval. About ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"} remaining.`,
     };
-  }
-
-  if (lastServerRefresh?.scannedAt) {
-    const lastEastern = getEasternDateParts(lastServerRefresh.scannedAt);
-    if (lastEastern.dateKey === nowEastern.dateKey) {
-      return {
-        shouldRun: false,
-        settings,
-        lastServerRefresh,
-        reason: "The weekday 1:00 AM America/New_York scan already ran for today.",
-      };
-    }
   }
 
   return {
     shouldRun: true,
     settings,
     lastServerRefresh,
-    reason: "Weekday 1:00 AM America/New_York schedule matched.",
+    reason: `The ${intervalMinutes}-minute server refresh interval has elapsed.`,
   };
 }
 
@@ -166,6 +138,7 @@ module.exports = async (req, res) => {
           scannedAt: storedSnapshot.scannedAt,
           productCount: storedSnapshot.productCount,
           triggerSource: storedSnapshot.triggerSource,
+          cleanup: storedSnapshot.cleanup || null,
           reason: schedulingDecision.reason,
         },
         null,

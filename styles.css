@@ -1085,7 +1085,7 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 10px;
 }
 
 .mobile-field {
@@ -1102,7 +1102,7 @@ textarea {
 }
 
 .mobile-card-actions {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 table {
@@ -1345,6 +1345,10 @@ tbody tr:hover td {
   padding: 16px 0 4px;
 }
 
+.profile-toggle-row > span {
+  min-width: 0;
+}
+
 .profile-toggle-row strong {
   display: block;
   margin-bottom: 4px;
@@ -1372,7 +1376,8 @@ tbody tr:hover td {
 
 .profile-toggle-pair {
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 10px;
   align-items: center;
 }
@@ -1584,6 +1589,7 @@ tbody tr:hover td {
 
   .profile-toggle-pair {
     width: 100%;
+    justify-content: flex-start;
   }
 
   .auth-form {
