@@ -1,5 +1,5 @@
 const { requireAppUser } = require("../lib/auth");
-const { updateAppUserProfile } = require("../lib/app-users-db");
+const { recordAppUserLogin, updateAppUserProfile } = require("../lib/app-users-db");
 const { validatePushoverUserKey, isPushoverConfigured } = require("../lib/pushover");
 const { getVaultEmailConfig, isVaultEmailIngestConfigured } = require("../lib/vault-key-email");
 const { getLatestServerRefreshSnapshot } = require("../lib/scan-history-db");
@@ -33,6 +33,8 @@ module.exports = async (req, res) => {
       const notifyChanged = Boolean(body.notifyChanged);
       const notifyRemoved = Boolean(body.notifyRemoved);
       const notifyPurchasable = Boolean(body.notifyPurchasable);
+      const notifyAddedHotOnly = Boolean(body.notifyAddedHotOnly);
+      const notifyPurchasableHotOnly = Boolean(body.notifyPurchasableHotOnly);
       const notifyVaultOpen = Boolean(body.notifyVaultOpen);
       const notifyVaultClosed = Boolean(body.notifyVaultClosed);
       const notificationsCritical = Boolean(body.notificationsCritical);
@@ -73,6 +75,8 @@ module.exports = async (req, res) => {
         notifyChanged,
         notifyRemoved,
         notifyPurchasable,
+        notifyAddedHotOnly,
+        notifyPurchasableHotOnly,
         notifyVaultOpen,
         notifyVaultClosed,
         notificationsCritical,
@@ -126,6 +130,10 @@ module.exports = async (req, res) => {
   }
 
   const lastServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+  const shouldRecordLogin = req.query?.recordLogin === "1";
+  const appUser = shouldRecordLogin
+    ? await recordAppUserLogin(auth.user.email).catch(() => auth.appUser)
+    : auth.appUser;
 
   res.status(200).send(
     JSON.stringify(
@@ -135,7 +143,7 @@ module.exports = async (req, res) => {
           id: auth.user.id,
           email: auth.user.email,
         },
-        appUser: auth.appUser,
+        appUser,
         pushoverConfigured: isPushoverConfigured(),
         vaultEmailConfigured: isVaultEmailIngestConfigured(),
         vaultEmailForwardingAddress: getVaultEmailConfig().forwardingAddress || null,

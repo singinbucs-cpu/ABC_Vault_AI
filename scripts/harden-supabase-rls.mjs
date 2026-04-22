@@ -8,6 +8,7 @@ const TABLES = [
   "scan_runtime_state",
   "hot_items",
   "server_refresh_settings",
+  "vault_email_events",
 ];
 
 function requireEnv(name) {

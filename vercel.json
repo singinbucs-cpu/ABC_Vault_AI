@@ -39,6 +39,10 @@
       "dest": "/api/auth-config.js"
     },
     {
+      "src": "/api/admin-users",
+      "dest": "/api/admin-users.js"
+    },
+    {
       "src": "/api/request-otp",
       "dest": "/api/request-otp.js"
     },
@@ -69,6 +73,10 @@
     {
       "src": "/api/vault-key-email",
       "dest": "/api/vault-key-email.js"
+    },
+    {
+      "src": "/api/vault-email-events",
+      "dest": "/api/vault-email-events.js"
     },
     {
       "src": "/(.*)",

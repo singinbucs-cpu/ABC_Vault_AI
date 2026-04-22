@@ -6,9 +6,12 @@ const html = htm.bind(React.createElement);
 const STORAGE_KEY = "abc-vault-live-scanner:last-scan:v1";
 const THEME_STORAGE_KEY = "abc-vault-live-scanner:theme:v1";
 const MAGIC_LINK_COOLDOWN_KEY = "abc-vault-live-scanner:magic-link-cooldown:v1";
+const IN_APP_NOTIFICATIONS_KEY = "abc-vault-live-scanner:in-app-notifications:v1";
 const APP_BASE_URL = "https://abc-vault-live-scanner.vercel.app/";
+const ABC_VAULT_URL = "https://theabcvault.com/";
 const AUTO_REFRESH_SECONDS = 30;
 const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
+const VIEWER_REFRESH_RATE_OPTIONS = [5, 10, 15, 30];
 const SERVER_REFRESH_INTERVAL_OPTIONS = [1, 5, 10, 30, 60];
 const MAGIC_LINK_COOLDOWN_SECONDS = 60;
 const CELEBRATION_CONFETTI_COUNT = 18;
@@ -28,7 +31,11 @@ function mergeChangeItems(existingItems, incomingItems, getKey) {
     merged.set(getKey(item), item);
   });
 
-  return Array.from(merged.values());
+  return Array.from(merged.values()).sort((a, b) => {
+    const aTime = new Date(a.detectedAt || 0).getTime();
+    const bTime = new Date(b.detectedAt || 0).getTime();
+    return bTime - aTime;
+  });
 }
 
 function buildAddedItems(items, detectedAt) {
@@ -176,6 +183,49 @@ function formatChangedFieldLabel(field) {
   return labels[field] || field;
 }
 
+function formatChangeValue(field, value) {
+  if (field === "isPurchasableFromListingPage" || field === "newBadge" || field === "sourcedCertifiedBadge" || field === "soldOutIndicatorPresent") {
+    return value ? "Yes" : "No";
+  }
+
+  if (field === "buttonStatesShown") {
+    return Array.isArray(value) && value.length ? value.join(", ") : "None shown";
+  }
+
+  if (value === undefined || value === null || value === "") {
+    return "Not shown";
+  }
+
+  return String(value);
+}
+
+function buildChangeDescriptions(item) {
+  const details = item?.details || {};
+  const fields = item?.fields || [];
+
+  if (!fields.length) {
+    return ["Listing details changed."];
+  }
+
+  return fields.map((field) => {
+    const detail = details[field] || {};
+    const previousValue = detail.previous;
+    const currentValue = detail.current;
+
+    if (field === "isPurchasableFromListingPage") {
+      if (currentValue === true) {
+        return "Is now purchasable.";
+      }
+
+      if (currentValue === false) {
+        return "Is no longer purchasable.";
+      }
+    }
+
+    return `${formatChangedFieldLabel(field)} from ${formatChangeValue(field, previousValue)} to ${formatChangeValue(field, currentValue)}.`;
+  });
+}
+
 function buildCelebrationConfetti() {
   return Array.from({ length: CELEBRATION_CONFETTI_COUNT }, (_, index) => ({
     id: `confetti-${index}`,
@@ -315,6 +365,15 @@ function getInitialTheme() {
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function getInitialInAppNotificationsEnabled() {
+  try {
+    const storedValue = window.localStorage.getItem(IN_APP_NOTIFICATIONS_KEY);
+    return storedValue !== "off";
+  } catch {
+    return true;
+  }
+}
+
 function getInitialMagicLinkCooldown() {
   try {
     const raw = window.localStorage.getItem(MAGIC_LINK_COOLDOWN_KEY);
@@ -345,6 +404,7 @@ function diffSnapshots(previousProducts, currentProducts) {
     }
 
     const fieldChanges = [];
+    const changeDetails = {};
     for (const field of [
       "productName",
       "category",
@@ -357,17 +417,28 @@ function diffSnapshots(previousProducts, currentProducts) {
     ]) {
       if (JSON.stringify(previousItem[field]) !== JSON.stringify(currentItem[field])) {
         fieldChanges.push(field);
+        changeDetails[field] = {
+          previous: previousItem[field],
+          current: currentItem[field],
+        };
       }
     }
 
     if (JSON.stringify(previousItem.buttonStatesShown) !== JSON.stringify(currentItem.buttonStatesShown)) {
       fieldChanges.push("buttonStatesShown");
+      changeDetails.buttonStatesShown = {
+        previous: previousItem.buttonStatesShown,
+        current: currentItem.buttonStatesShown,
+      };
     }
 
     if (fieldChanges.length > 0) {
       changed.push({
         productName: currentItem.productName,
+        productUrl: currentItem.productUrl || null,
+        isPurchasableFromListingPage: Boolean(currentItem.isPurchasableFromListingPage),
         fields: fieldChanges,
+        details: changeDetails,
       });
     }
   }
@@ -407,14 +478,55 @@ function isHotItem(hotItems, productId) {
   return hotItems.some((item) => item.productId === productId);
 }
 
-function renderLinkedProductName(item) {
+function renderLinkedProductName(item, onProductLinkClick = null) {
   return item.productUrl
     ? html`
-        <a className="product-link" href=${item.productUrl} target="_blank" rel="noreferrer">
+        <a
+          className="product-link"
+          href=${item.productUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick=${onProductLinkClick ? (event) => onProductLinkClick(event, item) : undefined}
+        >
           ${item.productName}
         </a>
       `
     : html`<span>${item.productName}</span>`;
+}
+
+function renderProductThumbnail(item, className = "product-thumb", onOpen = null) {
+  if (!item?.imageUrl) {
+    return null;
+  }
+
+  const image = html`
+    <img
+      className=${className}
+      src=${item.imageUrl}
+      alt=${item.imageAlt || item.productName || ""}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onError=${(event) => {
+        event.currentTarget.style.display = "none";
+      }}
+    />
+  `;
+
+  if (!onOpen) {
+    return image;
+  }
+
+  return html`
+    <button
+      className="product-thumb-button"
+      type="button"
+      onClick=${() => onOpen(item)}
+      aria-label=${`View larger image for ${item.productName}`}
+    >
+      ${image}
+    </button>
+  `;
 }
 
 function renderMetaCard(label, value, extra = null) {
@@ -434,17 +546,96 @@ function getPreviewNames(items, limit = 5) {
     .slice(0, limit);
 }
 
-function renderStatPreview(items, emptyLabel) {
-  const previewNames = getPreviewNames(items);
+function renderStatPreview(items, emptyLabel, options = {}) {
+  const limit = options.limit || 5;
+  const showFullListOnHover = Boolean(options.showFullListOnHover);
+  const previewNames = getPreviewNames(items, limit);
+  const fullNames = getPreviewNames(items, items.length);
+  const remainingCount = Math.max(fullNames.length - previewNames.length, 0);
+  const fullListLabel = fullNames.join("\n");
 
   if (!previewNames.length) {
     return html`<div className="stat-preview-empty">${emptyLabel}</div>`;
   }
 
   return html`
-    <div className="stat-preview-list">
+    <div
+      className=${`stat-preview-list ${showFullListOnHover && remainingCount ? "stat-preview-hoverable" : ""}`}
+      tabIndex=${showFullListOnHover && remainingCount ? 0 : undefined}
+      title=${showFullListOnHover && remainingCount ? fullListLabel : undefined}
+      aria-label=${showFullListOnHover && remainingCount ? `${fullNames.length} items. Focus or hover to see the full list.` : undefined}
+    >
       ${previewNames.map((name) => html`<div className="stat-preview-item">${name}</div>`)}
+      ${remainingCount
+        ? html`<div className="stat-preview-more">+${remainingCount} more. Hover to view all.</div>`
+        : null}
+      ${showFullListOnHover && remainingCount
+        ? html`
+            <div className="stat-preview-popover" role="tooltip">
+              <div className="stat-preview-popover-title">Full list</div>
+              ${fullNames.map((name) => html`<div className="stat-preview-popover-item">${name}</div>`)}
+            </div>
+          `
+        : null}
     </div>
+  `;
+}
+
+function renderVaultEmailEvent(event, onDelete) {
+  const confirmationLinks = Array.isArray(event.confirmationLinks) ? event.confirmationLinks : [];
+  const candidateEmails = Array.isArray(event.candidateEmails) ? event.candidateEmails : [];
+  const recipientEmails = Array.isArray(event.recipientEmails) ? event.recipientEmails : [];
+  const eventTime = event.receivedAt || event.createdAt;
+
+  return html`
+    <article className="manager-card email-event-card" key=${`email-event-${event.id}`}>
+      <div className="manager-card-head">
+        <div>
+          <div className="manager-kicker">${event.eventType || "Inbound email"}</div>
+          <h3 className="manager-title">${event.subject || "No subject captured"}</h3>
+        </div>
+        <div className="email-event-actions">
+          <span className=${`pill ${event.status === "saved" ? "pill-yes" : "pill-no"}`}>${event.status}</span>
+          <button className="button button-secondary button-small" type="button" onClick=${() => onDelete(event.id)}>
+            Delete
+          </button>
+        </div>
+      </div>
+      <div className="manager-meta manager-meta-stack">
+        <span>Received: ${formatScanTime(eventTime)}</span>
+        <span>From: ${event.fromAddress || "Not captured"}</span>
+        <span>Matched user: ${event.matchedUserEmail || "No user matched"}</span>
+        <span>Vault key: ${event.vaultKeyCode || "Not found"}</span>
+        <span>
+          Gmail confirmation code:
+          ${event.confirmationCode ? html`<code>${event.confirmationCode}</code>` : "Not found"}
+        </span>
+        <span>Recipients: ${recipientEmails.length ? recipientEmails.join(", ") : "Not captured"}</span>
+        <span>Candidate emails: ${candidateEmails.length ? candidateEmails.join(", ") : "None captured"}</span>
+        <span>Message: ${event.message || "No message stored"}</span>
+      </div>
+      ${confirmationLinks.length
+        ? html`
+            <div className="manager-meta manager-meta-stack">
+              ${confirmationLinks.map(
+                (link, index) => html`
+                  <a className="product-link" href=${link} target="_blank" rel="noreferrer">
+                    Open Gmail confirmation link ${index + 1}
+                  </a>
+                `,
+              )}
+            </div>
+          `
+        : null}
+      ${event.preview
+        ? html`
+            <details className="email-event-preview">
+              <summary>View stored email preview</summary>
+              <p>${event.preview}</p>
+            </details>
+          `
+        : null}
+    </article>
   `;
 }
 
@@ -496,12 +687,14 @@ function App() {
     const [vaultKeyCopyMessage, setVaultKeyCopyMessage] = useState("");
     const [vaultKeyToast, setVaultKeyToast] = useState(null);
     const [celebrationBurst, setCelebrationBurst] = useState(null);
+    const [selectedProductImage, setSelectedProductImage] = useState(null);
     const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(AUTO_REFRESH_SECONDS);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [countdown, setCountdown] = useState(AUTO_REFRESH_SECONDS);
+  const [inAppNotificationsEnabled, setInAppNotificationsEnabled] = useState(getInitialInAppNotificationsEnabled);
   const [changeAlert, setChangeAlert] = useState(null);
   const [changeFeed, setChangeFeed] = useState(createEmptyChangeFeed());
   const [changesCollapsed, setChangesCollapsed] = useState(false);
@@ -518,6 +711,8 @@ function App() {
   const [profileNotifyChanged, setProfileNotifyChanged] = useState(false);
   const [profileNotifyRemoved, setProfileNotifyRemoved] = useState(false);
   const [profileNotifyPurchasable, setProfileNotifyPurchasable] = useState(false);
+  const [profileNotifyAddedHotOnly, setProfileNotifyAddedHotOnly] = useState(false);
+  const [profileNotifyPurchasableHotOnly, setProfileNotifyPurchasableHotOnly] = useState(false);
   const [profileNotifyVaultOpen, setProfileNotifyVaultOpen] = useState(true);
   const [profileNotifyVaultClosed, setProfileNotifyVaultClosed] = useState(true);
   const [profileNotificationsCritical, setProfileNotificationsCritical] = useState(false);
@@ -542,6 +737,14 @@ function App() {
   const [serverRefreshIntervalMinutes, setServerRefreshIntervalMinutes] = useState(30);
   const [serverRefreshSaving, setServerRefreshSaving] = useState(false);
   const [serverRefreshMessage, setServerRefreshMessage] = useState("");
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersSaving, setAdminUsersSaving] = useState(false);
+  const [adminUsersMessage, setAdminUsersMessage] = useState("");
+  const [newViewerEmail, setNewViewerEmail] = useState("");
+  const [vaultEmailEvents, setVaultEmailEvents] = useState([]);
+  const [vaultEmailEventsLoading, setVaultEmailEventsLoading] = useState(false);
+  const [vaultEmailEventsMessage, setVaultEmailEventsMessage] = useState("");
   const loadingRef = useRef(false);
   const dataRef = useRef(null);
   const runScanRef = useRef(null);
@@ -636,6 +839,8 @@ function App() {
     setProfileNotifyChanged(Boolean(nextAppUser.notifyChanged));
     setProfileNotifyRemoved(Boolean(nextAppUser.notifyRemoved));
     setProfileNotifyPurchasable(Boolean(nextAppUser.notifyPurchasable));
+    setProfileNotifyAddedHotOnly(Boolean(nextAppUser.notifyAddedHotOnly));
+    setProfileNotifyPurchasableHotOnly(Boolean(nextAppUser.notifyPurchasableHotOnly));
     setProfileNotifyVaultOpen(Boolean(nextAppUser.notifyVaultOpen));
     setProfileNotifyVaultClosed(Boolean(nextAppUser.notifyVaultClosed));
     setProfileNotificationsCritical(Boolean(nextAppUser.notificationsCritical));
@@ -674,7 +879,7 @@ function App() {
       };
     });
 
-      if (nextVaultKeyCode && didVaultKeyActuallyChange) {
+      if (nextVaultKeyCode && didVaultKeyActuallyChange && inAppNotificationsEnabled) {
         setVaultKeyToast({
           key: nextVaultKeyCode,
           receivedAt: nextVaultKeyLastReceivedAt || new Date().toISOString(),
@@ -690,7 +895,7 @@ function App() {
 
   const loadAppUser = async () => {
     try {
-      const response = await apiFetch("/api/me");
+      const response = await apiFetch("/api/me?recordLogin=1");
       const payload = await response.json();
 
       if (!response.ok) {
@@ -702,7 +907,9 @@ function App() {
       applyAppUserPayload(payload, { syncProfileFields: true });
       setAuthError("");
     } catch (loadError) {
-      setAppUser(null);
+      if (loadError.statusCode === 401 || loadError.statusCode === 403) {
+        setAppUser(null);
+      }
       setAuthError(loadError.message || "Access check failed.");
     }
   };
@@ -725,6 +932,8 @@ function App() {
           notifyChanged: profileNotifyChanged,
           notifyRemoved: profileNotifyRemoved,
           notifyPurchasable: profileNotifyPurchasable,
+          notifyAddedHotOnly: profileNotifyAddedHotOnly,
+          notifyPurchasableHotOnly: profileNotifyPurchasableHotOnly,
           notifyVaultOpen: profileNotifyVaultOpen,
           notifyVaultClosed: profileNotifyVaultClosed,
           notificationsCritical: profileNotificationsCritical,
@@ -840,13 +1049,15 @@ function App() {
             ),
           }));
 
-          setChangeAlert({
-            detectedAt,
-            added: liveDiff.added.length,
-            removed: liveDiff.removed?.length || 0,
-            changed: liveDiff.changed?.length || 0,
-            totalChanges,
-          });
+          if (inAppNotificationsEnabled) {
+            setChangeAlert({
+              detectedAt,
+              added: liveDiff.added.length,
+              removed: liveDiff.removed?.length || 0,
+              changed: liveDiff.changed?.length || 0,
+              totalChanges,
+            });
+          }
         }
       } else {
         if (totalChanges > 0) {
@@ -863,6 +1074,8 @@ function App() {
                 productName: item.productName,
                 productUrl: item.productUrl || null,
                 fields: item.fields,
+                details: item.details || {},
+                isPurchasableFromListingPage: item.isPurchasableFromListingPage,
                 detectedAt,
               })),
               (item) => item.productId,
@@ -881,13 +1094,15 @@ function App() {
         }
 
         if (totalChanges > 0) {
-          setChangeAlert({
-            detectedAt,
-            added: liveDiff.added.length,
-            removed: liveDiff.removed.length,
-            changed: liveDiff.changed.length,
-            totalChanges,
-          });
+          if (inAppNotificationsEnabled) {
+            setChangeAlert({
+              detectedAt,
+              added: liveDiff.added.length,
+              removed: liveDiff.removed.length,
+              changed: liveDiff.changed.length,
+              totalChanges,
+            });
+          }
         }
       }
 
@@ -1018,6 +1233,196 @@ function App() {
     }
   };
 
+  const loadAdminUsers = async () => {
+    setAdminUsersLoading(true);
+    setAdminUsersMessage("");
+
+    try {
+      const response = await apiFetch("/api/admin-users");
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to load users.");
+      }
+
+      setAdminUsers(payload.users || []);
+    } catch (loadError) {
+      setAdminUsersMessage(loadError.message || "Unable to load users.");
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  };
+
+  const addViewerUser = async (event) => {
+    event.preventDefault();
+
+    const email = newViewerEmail.trim();
+    if (!email) {
+      setAdminUsersMessage("Enter an email address to add.");
+      return;
+    }
+
+    setAdminUsersSaving(true);
+    setAdminUsersMessage("");
+
+    try {
+      const response = await apiFetch("/api/admin-users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to add viewer.");
+      }
+
+      setAdminUsers(payload.users || []);
+      setNewViewerEmail("");
+      setAdminUsersMessage(payload.message || `${email} was added as a viewer.`);
+    } catch (addError) {
+      setAdminUsersMessage(addError.message || "Unable to add viewer.");
+    } finally {
+      setAdminUsersSaving(false);
+    }
+  };
+
+  const loadVaultEmailEvents = async () => {
+    setVaultEmailEventsLoading(true);
+    setVaultEmailEventsMessage("");
+
+    try {
+      const response = await apiFetch("/api/vault-email-events?limit=25");
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to load inbound email log.");
+      }
+
+      setVaultEmailEvents(payload.events || []);
+      if (!payload.storageConfigured) {
+        setVaultEmailEventsMessage(payload.message || "Inbound email event storage is not configured.");
+      }
+    } catch (loadError) {
+      setVaultEmailEventsMessage(loadError.message || "Unable to load inbound email log.");
+    } finally {
+      setVaultEmailEventsLoading(false);
+    }
+  };
+
+  const deleteVaultEmailEvent = async (eventId) => {
+    const confirmed = window.confirm("Delete this inbound email log entry?");
+    if (!confirmed) {
+      return;
+    }
+
+    setVaultEmailEventsLoading(true);
+    setVaultEmailEventsMessage("");
+
+    try {
+      const response = await apiFetch(`/api/vault-email-events?id=${encodeURIComponent(eventId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to delete inbound email log entry.");
+      }
+
+      setVaultEmailEvents(payload.events || []);
+      setVaultEmailEventsMessage("Inbound email log entry deleted.");
+    } catch (deleteError) {
+      setVaultEmailEventsMessage(deleteError.message || "Unable to delete inbound email log entry.");
+    } finally {
+      setVaultEmailEventsLoading(false);
+    }
+  };
+
+  const deleteAllVaultEmailEvents = async () => {
+    const confirmed = window.confirm("Delete ALL inbound email log entries? This cannot be undone.");
+    if (!confirmed) {
+      return;
+    }
+
+    setVaultEmailEventsLoading(true);
+    setVaultEmailEventsMessage("");
+
+    try {
+      const response = await apiFetch("/api/vault-email-events?all=1", {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to clear inbound email log.");
+      }
+
+      setVaultEmailEvents(payload.events || []);
+      setVaultEmailEventsMessage(`Deleted ${payload.deletedCount || 0} inbound email log entries.`);
+    } catch (deleteError) {
+      setVaultEmailEventsMessage(deleteError.message || "Unable to clear inbound email log.");
+    } finally {
+      setVaultEmailEventsLoading(false);
+    }
+  };
+
+  const setViewerActive = async (email, isActive) => {
+    setAdminUsersSaving(true);
+    setAdminUsersMessage("");
+
+    try {
+      const response = await apiFetch("/api/admin-users", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, isActive }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to update viewer.");
+      }
+
+      setAdminUsers(payload.users || []);
+      setAdminUsersMessage(payload.message || "Viewer updated.");
+    } catch (updateError) {
+      setAdminUsersMessage(updateError.message || "Unable to update viewer.");
+    } finally {
+      setAdminUsersSaving(false);
+    }
+  };
+
+  const removeViewerUser = async (email) => {
+    const confirmed = window.confirm(`Remove ${email} from approved viewers?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setAdminUsersSaving(true);
+    setAdminUsersMessage("");
+
+    try {
+      const response = await apiFetch(`/api/admin-users?email=${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to remove viewer.");
+      }
+
+      setAdminUsers(payload.users || []);
+      setAdminUsersMessage(payload.message || "Viewer removed.");
+    } catch (removeError) {
+      setAdminUsersMessage(removeError.message || "Unable to remove viewer.");
+    } finally {
+      setAdminUsersSaving(false);
+    }
+  };
+
   const syncHotItem = async (item, shouldBeHot) => {
     const response = await apiFetch("/api/hot-items", {
       method: shouldBeHot ? "POST" : "DELETE",
@@ -1106,14 +1511,17 @@ function App() {
         setSession(currentSession);
         setAuthReady(true);
 
-        const { data } = client.auth.onAuthStateChange((_event, nextSession) => {
+        const { data } = client.auth.onAuthStateChange((event, nextSession) => {
           if (!isActive) {
             return;
           }
 
           setSession(nextSession);
-          setAppUser(null);
           setAuthError("");
+
+          if (event === "SIGNED_OUT" || !nextSession) {
+            setAppUser(null);
+          }
         });
 
         authSubscription = data.subscription;
@@ -1153,6 +1561,8 @@ function App() {
       setProfileNotifyChanged(false);
       setProfileNotifyRemoved(false);
       setProfileNotifyPurchasable(false);
+      setProfileNotifyAddedHotOnly(false);
+      setProfileNotifyPurchasableHotOnly(false);
       setProfileNotifyVaultOpen(true);
       setProfileNotifyVaultClosed(true);
       setProfileNotificationsCritical(false);
@@ -1175,6 +1585,14 @@ function App() {
       setServerRefreshIntervalMinutes(30);
       setServerRefreshSaving(false);
       setServerRefreshMessage("");
+      setAdminUsers([]);
+      setAdminUsersLoading(false);
+      setAdminUsersSaving(false);
+      setAdminUsersMessage("");
+      setNewViewerEmail("");
+      setVaultEmailEvents([]);
+      setVaultEmailEventsLoading(false);
+      setVaultEmailEventsMessage("");
       return;
     }
 
@@ -1194,6 +1612,12 @@ function App() {
     if (appUser.role === "admin") {
       loadServerRefreshSettings().catch((loadError) => {
         setServerRefreshMessage(loadError.message || "Unable to load server refresh settings.");
+      });
+      loadAdminUsers().catch((loadError) => {
+        setAdminUsersMessage(loadError.message || "Unable to load users.");
+      });
+      loadVaultEmailEvents().catch((loadError) => {
+        setVaultEmailEventsMessage(loadError.message || "Unable to load inbound email log.");
       });
     }
   }, [authReady, authConfig, session, appUser?.email, appUser?.role]);
@@ -1329,6 +1753,14 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(IN_APP_NOTIFICATIONS_KEY, inAppNotificationsEnabled ? "on" : "off");
+    } catch {
+      // Ignore storage failures and keep the mute toggle working for this session.
+    }
+  }, [inAppNotificationsEnabled]);
+
+  useEffect(() => {
     dataRef.current = data;
   }, [data]);
 
@@ -1352,13 +1784,17 @@ function App() {
     appUserRef.current = appUser;
   }, [appUser]);
 
-    useEffect(() => {
-      if (!changeAlert) {
-        previousAlertSignatureRef.current = "";
-        return;
-      }
+  useEffect(() => {
+    if (!changeAlert) {
+      previousAlertSignatureRef.current = "";
+      return;
+    }
 
-      const signature = JSON.stringify(changeAlert);
+    if (!inAppNotificationsEnabled) {
+      return;
+    }
+
+    const signature = JSON.stringify(changeAlert);
       if (signature !== previousAlertSignatureRef.current) {
         setCelebrationBurst({
           id: `changes-${Date.now()}`,
@@ -1368,13 +1804,22 @@ function App() {
         playNotificationSound(audioContextRef);
         previousAlertSignatureRef.current = signature;
       }
-    }, [changeAlert]);
+  }, [changeAlert, inAppNotificationsEnabled]);
 
   useEffect(() => {
     if (autoRefreshEnabled) {
       setCountdown(refreshIntervalSeconds);
     }
   }, [refreshIntervalSeconds, autoRefreshEnabled]);
+
+  useEffect(() => {
+    if (!appUser || appUser.role === "admin" || VIEWER_REFRESH_RATE_OPTIONS.includes(refreshIntervalSeconds)) {
+      return;
+    }
+
+    setRefreshIntervalSeconds(5);
+    setCountdown(5);
+  }, [appUser, refreshIntervalSeconds]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -1433,6 +1878,8 @@ function App() {
       return matchesCategory && matchesPurchasable && matchesHot;
     });
   }, [categoryFilter, purchasableFilter, hotFilter, data, hotItems]);
+
+  const browserRefreshRateOptions = appUser?.role === "admin" ? REFRESH_RATE_OPTIONS : VIEWER_REFRESH_RATE_OPTIONS;
 
   const notPurchasableCount = useMemo(() => {
     return (data?.products || []).filter((item) => !item.isPurchasableFromListingPage).length;
@@ -1545,18 +1992,75 @@ function App() {
       return;
     }
 
+    const openVaultSourcePage = () => {
+      window.open(ABC_VAULT_URL, "_blank", "noopener,noreferrer");
+    };
+
     try {
       if (navigator.clipboard?.writeText && window.isSecureContext) {
         await navigator.clipboard.writeText(key);
         setVaultKeyCopyMessage("Vault key copied.");
+        openVaultSourcePage();
         return;
       }
 
       const copied = fallbackCopyText(key);
       setVaultKeyCopyMessage(copied ? "Vault key copied." : "Unable to copy the Vault key on this device.");
+      if (copied) {
+        openVaultSourcePage();
+      }
     } catch {
       const copied = fallbackCopyText(key);
       setVaultKeyCopyMessage(copied ? "Vault key copied." : "Unable to copy the Vault key on this device.");
+      if (copied) {
+        openVaultSourcePage();
+      }
+    }
+  };
+
+  const copyVaultKeyAndOpenProductLink = async (event, item) => {
+    if (!item?.productUrl) {
+      return;
+    }
+
+    event.preventDefault();
+    const productWindow = window.open("about:blank", "_blank");
+
+    if (productWindow) {
+      productWindow.opener = null;
+    }
+
+    const openProduct = () => {
+      if (productWindow) {
+        productWindow.location.href = item.productUrl;
+        return;
+      }
+
+      window.open(item.productUrl, "_blank", "noopener,noreferrer");
+    };
+
+    const key = (appUser?.vaultKeyCode || "").trim();
+    if (!key) {
+      setVaultKeyCopyMessage("No Vault key is stored yet. Opening product page.");
+      openProduct();
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(key);
+        setVaultKeyCopyMessage("Vault key copied. Opening product page.");
+        openProduct();
+        return;
+      }
+
+      const copied = fallbackCopyText(key);
+      setVaultKeyCopyMessage(copied ? "Vault key copied. Opening product page." : "Unable to copy the Vault key on this device. Opening product page.");
+      openProduct();
+    } catch {
+      const copied = fallbackCopyText(key);
+      setVaultKeyCopyMessage(copied ? "Vault key copied. Opening product page." : "Unable to copy the Vault key on this device. Opening product page.");
+      openProduct();
     }
   };
 
@@ -1883,6 +2387,25 @@ function App() {
   return html`
       <main className="app-shell" aria-busy=${loading}>
         <a className="skip-link" href="#current-listings">Skip to current listings</a>
+        ${selectedProductImage
+          ? html`
+              <section className="image-lightbox" role="dialog" aria-modal="true" aria-label=${`Larger image for ${selectedProductImage.productName}`}>
+                <button className="image-lightbox-backdrop" type="button" onClick=${() => setSelectedProductImage(null)} aria-label="Close image preview"></button>
+                <div className="image-lightbox-panel">
+                  <button className="change-toast-close image-lightbox-close" type="button" onClick=${() => setSelectedProductImage(null)}>
+                    Close
+                  </button>
+                  <img
+                    className="image-lightbox-img"
+                    src=${selectedProductImage.imageUrl}
+                    alt=${selectedProductImage.imageAlt || selectedProductImage.productName || ""}
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="image-lightbox-title">${selectedProductImage.productName}</div>
+                </div>
+              </section>
+            `
+          : null}
         ${celebrationBurst || vaultKeyToast || changeAlert
           ? html`
               <section className="notification-overlay" aria-live="assertive" aria-atomic="true">
@@ -1979,7 +2502,12 @@ function App() {
       <section className="hero" aria-label="Scanner overview">
         <div className="hero-panel" role="region" aria-labelledby="dashboard-title">
           <div className="hero-topline">
-            <h1 id="dashboard-title">ABC Vault listing tracker</h1>
+            <div className="hero-title-stack">
+              <h1 id="dashboard-title">ABC Vault listing tracker</h1>
+              <button className="button button-primary hero-scan-button" type="button" onClick=${runScan} disabled=${loading}>
+                ${loading ? "Scanning live HTML..." : "Run fresh scan"}
+              </button>
+            </div>
             <div className="hero-status-stack">
               <div
                 className=${`vault-status-banner vault-status-${vaultStatus}`}
@@ -1999,10 +2527,7 @@ function App() {
               </div>
             </div>
           </div>
-          <div className="hero-actions">
-            <button className="button button-primary" type="button" onClick=${runScan} disabled=${loading}>
-              ${loading ? "Scanning live HTML..." : "Run fresh scan"}
-            </button>
+          <div className="hero-actions hero-nav-actions" aria-label="Primary navigation">
             <button
               className=${`button button-secondary ${activePage === "listings" ? "page-nav-active" : ""}`}
               type="button"
@@ -2020,7 +2545,15 @@ function App() {
             ${appUser.role === "admin"
               ? html`
                   <button
-                    className=${`button button-secondary ${activePage === "settings" || activePage === "server-refresh" || activePage === "hot-manager" ? "page-nav-active" : ""}`}
+                    className=${`button button-secondary ${
+                      activePage === "settings" ||
+                      activePage === "server-refresh" ||
+                      activePage === "hot-manager" ||
+                      activePage === "user-manager" ||
+                      activePage === "vault-email-events"
+                        ? "page-nav-active"
+                        : ""
+                    }`}
                     type="button"
                     onClick=${() => setActivePage("settings")}
                   >
@@ -2045,7 +2578,7 @@ function App() {
                     <div className="refresh-rate-row">
                       <strong>Refresh rate:</strong>
                       <div className="refresh-rate-group" role="group" aria-label="Auto refresh rate">
-                        ${REFRESH_RATE_OPTIONS.map(
+                        ${browserRefreshRateOptions.map(
                           (seconds) => html`
                             <button
                               className=${`button button-secondary button-small ${refreshIntervalSeconds === seconds ? "refresh-rate-active" : ""}`}
@@ -2060,27 +2593,57 @@ function App() {
                       </div>
                     </div>
                     <div className="refresh-rate-row">
-                      <strong>Browser auto refresh:</strong>
-                      <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
-                        <button
-                          className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
-                          type="button"
-                          onClick=${() => {
-                            setAutoRefreshEnabled(true);
-                            setCountdown(refreshIntervalSeconds);
-                          }}
-                          aria-pressed=${autoRefreshEnabled}
-                        >
-                          Start
-                        </button>
-                        <button
-                          className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
-                          type="button"
-                          onClick=${() => setAutoRefreshEnabled(false)}
-                          aria-pressed=${!autoRefreshEnabled}
-                        >
-                          Stop
-                        </button>
+                      <div className="inline-control-pair">
+                        <div>
+                          <strong>Browser auto refresh:</strong>
+                          <div className="refresh-rate-group" role="group" aria-label="Browser auto refresh controls">
+                            <button
+                              className=${`button button-secondary button-small ${autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                              type="button"
+                              onClick=${() => {
+                                setAutoRefreshEnabled(true);
+                                setCountdown(refreshIntervalSeconds);
+                              }}
+                              aria-pressed=${autoRefreshEnabled}
+                            >
+                              Start
+                            </button>
+                            <button
+                              className=${`button button-secondary button-small ${!autoRefreshEnabled ? "refresh-rate-active" : ""}`}
+                              type="button"
+                              onClick=${() => setAutoRefreshEnabled(false)}
+                              aria-pressed=${!autoRefreshEnabled}
+                            >
+                              Stop
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <strong>In-app notifications:</strong>
+                          <div className="refresh-rate-group" role="group" aria-label="In-app notification controls">
+                            <button
+                              className=${`button button-secondary button-small ${inAppNotificationsEnabled ? "refresh-rate-active" : ""}`}
+                              type="button"
+                              onClick=${() => setInAppNotificationsEnabled(true)}
+                              aria-pressed=${inAppNotificationsEnabled}
+                            >
+                              On
+                            </button>
+                            <button
+                              className=${`button button-secondary button-small ${!inAppNotificationsEnabled ? "refresh-rate-active" : ""}`}
+                              type="button"
+                              onClick=${() => {
+                                setInAppNotificationsEnabled(false);
+                                setChangeAlert(null);
+                                setVaultKeyToast(null);
+                                setCelebrationBurst(null);
+                              }}
+                              aria-pressed=${!inAppNotificationsEnabled}
+                            >
+                              Off
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2135,22 +2698,34 @@ function App() {
                 <div className="stat-card" role="listitem">
                   <div className="stat-number">${data?.productCount ?? "0"}</div>
                   <div className="stat-label">Products currently listed</div>
-                  ${renderStatPreview(data?.products || [], "No products in the current snapshot.")}
+                  ${renderStatPreview(data?.products || [], "No products in the current snapshot.", {
+                    limit: 2,
+                    showFullListOnHover: true,
+                  })}
                 </div>
                 <div className="stat-card" role="listitem">
                   <div className="stat-number">${hotItems.length}</div>
                   <div className="stat-label">Hot items</div>
-                  ${renderStatPreview(hotProducts, "No hot items yet.")}
+                  ${renderStatPreview(hotProducts, "No hot items yet.", {
+                    limit: 2,
+                    showFullListOnHover: true,
+                  })}
                 </div>
                 <div className="stat-card" role="listitem">
                   <div className="stat-number">${notPurchasableCount}</div>
                   <div className="stat-label">Not purchasable on listing page</div>
-                  ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.")}
+                  ${renderStatPreview(notPurchasableProducts, "Everything is purchasable right now.", {
+                    limit: 2,
+                    showFullListOnHover: true,
+                  })}
                 </div>
                 <div className="stat-card" role="listitem">
                   <div className="stat-number">${changeCounts.added}</div>
                   <div className="stat-label">Unread added items</div>
-                  ${renderStatPreview(changeFeed.added, "No unread added items.")}
+                  ${renderStatPreview(changeFeed.added, "No unread added items.", {
+                    limit: 2,
+                    showFullListOnHover: true,
+                  })}
                 </div>
               </div>
             `
@@ -2191,7 +2766,7 @@ function App() {
                                     (item) => html`
                                       <li className="change-item-row">
                                         <div className="change-item-content">
-                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <strong>${renderLinkedProductName(item, copyVaultKeyAndOpenProductLink)}</strong>
                                           <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
                                         </div>
                                         <button
@@ -2220,10 +2795,15 @@ function App() {
                                     (item) => html`
                                       <li className="change-item-row">
                                         <div className="change-item-content">
-                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <strong>${renderLinkedProductName(item, copyVaultKeyAndOpenProductLink)}</strong>
                                           <div className="change-item-meta">
-                                            ${formatScanTime(item.detectedAt)} | ${summarizeChangedFields(item.fields)}
+                                            ${formatScanTime(item.detectedAt)}
                                           </div>
+                                          <ul className="change-detail-list">
+                                            ${buildChangeDescriptions(item).map(
+                                              (description) => html`<li>${description}</li>`,
+                                            )}
+                                          </ul>
                                         </div>
                                         <button
                                           className="text-button"
@@ -2251,7 +2831,7 @@ function App() {
                                     (item) => html`
                                       <li className="change-item-row">
                                         <div className="change-item-content">
-                                          <strong>${renderLinkedProductName(item)}</strong>
+                                          <strong>${renderLinkedProductName(item, copyVaultKeyAndOpenProductLink)}</strong>
                                           <div className="change-item-meta">${formatScanTime(item.detectedAt)}</div>
                                         </div>
                                         <button
@@ -2471,6 +3051,17 @@ function App() {
                         >
                           Critical
                         </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileNotifyAddedHotOnly ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileNotifyAddedHotOnly((currentValue) => !currentValue);
+                          }}
+                        >
+                          Hot only
+                        </button>
                       </div>
                     </div>
                     <div className="profile-toggle-row profile-toggle-card">
@@ -2551,6 +3142,17 @@ function App() {
                           }}
                         >
                           Critical
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${profileNotifyPurchasableHotOnly ? "profile-critical-active" : ""}`}
+                          onClick=${(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setProfileNotifyPurchasableHotOnly((currentValue) => !currentValue);
+                          }}
+                        >
+                          Hot only
                         </button>
                       </div>
                     </div>
@@ -2692,6 +3294,26 @@ function App() {
                   ? html`
                       <article className="manager-card">
                         <div className="manager-kicker">Admin</div>
+                        <h3 className="manager-title">User management</h3>
+                        <p className="section-note">Add approved viewers and manage non-admin accounts.</p>
+                        <div className="change-toast-actions">
+                          <button className="button button-secondary" onClick=${() => setActivePage("user-manager")}>
+                            Manage users
+                          </button>
+                        </div>
+                      </article>
+                      <article className="manager-card">
+                        <div className="manager-kicker">Admin</div>
+                        <h3 className="manager-title">Inbound email log</h3>
+                        <p className="section-note">Review CloudMailin deliveries, Gmail forwarding codes, and Vault invite processing.</p>
+                        <div className="change-toast-actions">
+                          <button className="button button-secondary" onClick=${() => setActivePage("vault-email-events")}>
+                            Open email log
+                          </button>
+                        </div>
+                      </article>
+                      <article className="manager-card">
+                        <div className="manager-kicker">Admin</div>
                         <h3 className="manager-title">Server refresh</h3>
                         <p className="section-note">Manage the background server-side refresh schedule and review the next run.</p>
                         <div className="change-toast-actions">
@@ -2718,6 +3340,143 @@ function App() {
                       </article>
                     `
                   : null}
+              </div>
+            </section>
+          `
+        : activePage === "vault-email-events"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">Inbound Email Log</h2>
+                  <p className="section-note">
+                    Stored CloudMailin webhook deliveries, including Gmail forwarding confirmation codes and Vault invite processing.
+                  </p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("settings")}>
+                  Back to settings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">CloudMailin</div>
+                  <h3 className="manager-title">Latest inbound messages</h3>
+                  <p className="section-note">
+                    If CloudMailin hides a successful response, this log keeps the parsed confirmation code, links, and processing result.
+                  </p>
+                  <div className="change-toast-actions">
+                    <button className="button button-primary" onClick=${loadVaultEmailEvents} disabled=${vaultEmailEventsLoading}>
+                      ${vaultEmailEventsLoading ? "Refreshing email log..." : "Refresh email log"}
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      onClick=${deleteAllVaultEmailEvents}
+                      disabled=${vaultEmailEventsLoading || !vaultEmailEvents.length}
+                    >
+                      Clear all email logs
+                    </button>
+                  </div>
+                  ${vaultEmailEventsMessage ? html`<div className="scan-status">${vaultEmailEventsMessage}</div>` : null}
+                </article>
+              </div>
+              <div className="manager-list">
+                ${vaultEmailEventsLoading && !vaultEmailEvents.length
+                  ? html`<div className="empty-state">Loading inbound email events...</div>`
+                  : vaultEmailEvents.length
+                  ? vaultEmailEvents.map((event) => renderVaultEmailEvent(event, deleteVaultEmailEvent))
+                  : html`<div className="empty-state">No inbound email events stored yet. Retry a CloudMailin message or wait for the next delivery.</div>`}
+              </div>
+            </section>
+          `
+        : activePage === "user-manager"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">User Management</h2>
+                  <p className="section-note">Admins can add approved viewers and manage non-admin accounts.</p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("settings")}>
+                  Back to settings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">Add Viewer</div>
+                  <h3 className="manager-title">Create approved viewer</h3>
+                  <p className="section-note">Viewer users can sign in and view the listings, but they do not get admin settings.</p>
+                  <form className="auth-form" onSubmit=${addViewerUser}>
+                    <label className="auth-field">
+                      <span className="filter-label">Viewer email</span>
+                      <input
+                        className="auth-input"
+                        type="email"
+                        value=${newViewerEmail}
+                        onInput=${(event) => setNewViewerEmail(event.target.value)}
+                        placeholder="viewer@example.com"
+                        disabled=${adminUsersSaving}
+                      />
+                    </label>
+                    <div className="change-toast-actions">
+                      <button className="button button-primary" type="submit" disabled=${adminUsersSaving}>
+                        ${adminUsersSaving ? "Adding viewer..." : "Add viewer"}
+                      </button>
+                      <button className="button button-secondary" type="button" onClick=${loadAdminUsers} disabled=${adminUsersLoading}>
+                        ${adminUsersLoading ? "Refreshing..." : "Refresh users"}
+                      </button>
+                    </div>
+                  </form>
+                  ${adminUsersMessage ? html`<div className="scan-status">${adminUsersMessage}</div>` : null}
+                </article>
+              </div>
+              <div className="manager-list">
+                ${adminUsersLoading && !adminUsers.length
+                  ? html`<div className="empty-state">Loading users...</div>`
+                  : adminUsers.length
+                  ? adminUsers.map(
+                      (user) => html`
+                        <article className="manager-card" key=${`user-${user.email}`}>
+                          <div className="manager-card-head">
+                            <div>
+                              <div className="manager-kicker">${user.role === "admin" ? "Admin" : "Viewer"}</div>
+                              <h3 className="manager-title">${user.email}</h3>
+                            </div>
+                            <span className=${`pill ${user.isActive ? "pill-yes" : "pill-no"}`}>
+                              ${user.isActive ? "Active" : "Inactive"}
+                            </span>
+                          </div>
+                          <div className="manager-meta">
+                            <span>Role: ${user.role}</span>
+                            <span>Last login: ${user.lastLoginAt ? formatScanTime(user.lastLoginAt) : "Not recorded yet"}</span>
+                            <span>Updated: ${formatScanTime(user.updatedAt)}</span>
+                            <span>Created: ${formatScanTime(user.createdAt)}</span>
+                          </div>
+                          ${user.role === "admin"
+                            ? html`<p className="section-note">Admin accounts are managed through the admin allowlist, not this viewer tool.</p>`
+                            : html`
+                                <div className="change-toast-actions">
+                                  <button
+                                    className="button button-secondary"
+                                    type="button"
+                                    onClick=${() => setViewerActive(user.email, !user.isActive)}
+                                    disabled=${adminUsersSaving}
+                                  >
+                                    ${user.isActive ? "Deactivate" : "Reactivate"}
+                                  </button>
+                                  <button
+                                    className="button button-secondary"
+                                    type="button"
+                                    onClick=${() => removeViewerUser(user.email)}
+                                    disabled=${adminUsersSaving}
+                                  >
+                                    Remove viewer
+                                  </button>
+                                </div>
+                              `}
+                        </article>
+                      `,
+                    )
+                  : html`<div className="empty-state">No users found yet.</div>`}
               </div>
             </section>
           `
@@ -2922,20 +3681,24 @@ function App() {
                     <td>${item.pageNumber}</td>
                     <td>${item.lineItemNumber}</td>
                     <td className="name-cell">
-                      <div className="product-name-wrap">
-                        ${item.productUrl
-                          ? html`
-                              <a
-                                className="product-link"
-                                href=${item.productUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                ${item.productName}
-                              </a>
-                            `
-                          : html`<span>${item.productName}</span>`}
-                        ${isHotItem(hotItems, item.productId || item.productName) ? html`<span className="hot-badge" aria-label="Hot item">🔥</span>` : null}
+                      <div className="product-listing-cell">
+                        ${renderProductThumbnail(item, "product-thumb", setSelectedProductImage)}
+                        <div className="product-name-wrap">
+                          ${item.productUrl
+                            ? html`
+                                <a
+                                  className="product-link"
+                                  href=${item.productUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick=${(event) => copyVaultKeyAndOpenProductLink(event, item)}
+                                >
+                                  ${item.productName}
+                                </a>
+                              `
+                            : html`<span>${item.productName}</span>`}
+                          ${isHotItem(hotItems, item.productId || item.productName) ? html`<span className="hot-badge" aria-label="Hot item">🔥</span>` : null}
+                        </div>
                       </div>
                     </td>
                     <td>${item.category}</td>
@@ -2960,12 +3723,19 @@ function App() {
             (item) => html`
               <article className="mobile-card" key=${`mobile-${item.productId || `${item.pageNumber}-${item.lineItemNumber}`}`}>
                 <div className="mobile-card-top">
+                  ${renderProductThumbnail(item, "mobile-product-thumb", setSelectedProductImage)}
                   <div>
                     <div className="mobile-card-kicker">Page ${item.pageNumber} | Item ${item.lineItemNumber}</div>
                     <h3 className="mobile-card-title">
                       ${item.productUrl
                         ? html`
-                            <a className="product-link" href=${item.productUrl} target="_blank" rel="noreferrer">
+                            <a
+                              className="product-link"
+                              href=${item.productUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick=${(event) => copyVaultKeyAndOpenProductLink(event, item)}
+                            >
                               ${item.productName}
                             </a>
                           `

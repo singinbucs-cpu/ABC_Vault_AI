@@ -5,12 +5,14 @@ const hotItemsHandler = require("./api/hot-items");
 const scanHandler = require("./api/scan");
 const cronScanHandler = require("./api/cron-scan");
 const authConfigHandler = require("./api/auth-config");
+const adminUsersHandler = require("./api/admin-users");
 const requestOtpHandler = require("./api/request-otp");
 const meHandler = require("./api/me");
 const meStreamHandler = require("./api/me-stream");
 const pushoverTestHandler = require("./api/pushover-test");
 const serverRefreshSettingsHandler = require("./api/server-refresh-settings");
 const vaultKeyEmailHandler = require("./api/vault-key-email");
+const vaultEmailEventsHandler = require("./api/vault-email-events");
 
 const rootDir = __dirname;
 const port = Number(process.env.PORT || 3000);
@@ -136,6 +138,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/api/admin-users") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+      await adminUsersHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "admin_users_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/request-otp") {
     try {
       const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
@@ -245,6 +261,18 @@ const server = http.createServer(async (req, res) => {
       "Content-Type": "text/plain; charset=utf-8",
     });
     res.end("Method not allowed");
+    return;
+  }
+
+  if (url.pathname === "/api/vault-email-events") {
+    try {
+      await vaultEmailEventsHandler(createNodeRequest(req, url), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "vault_email_events_failed",
+        message: error.message,
+      });
+    }
     return;
   }
 
