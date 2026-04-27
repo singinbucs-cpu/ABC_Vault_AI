@@ -34,8 +34,6 @@ const REFRESH_WINDOW_WEEKDAY_INDEX = {
   Fri: 5,
   Sat: 6,
 };
-const SERVER_REFRESH_MODE_INTERVAL = "interval_minutes";
-const SERVER_REFRESH_MODE_OVERNIGHT = "overnight_sun_fri_1230_1am_et";
 
 function createClientTabId() {
   if (window.crypto?.randomUUID) {
@@ -373,11 +371,7 @@ function formatBooleanStatus(value) {
   return "Not attempted yet";
 }
 
-function formatServerRefreshMode(intervalMinutes, mode = SERVER_REFRESH_MODE_INTERVAL) {
-  if (mode === SERVER_REFRESH_MODE_OVERNIGHT) {
-    return "Sunday-Friday, 12:30 AM and 1:00 AM ET";
-  }
-
+function formatServerRefreshMode(intervalMinutes) {
   const numericInterval = Number(intervalMinutes) || 30;
   return numericInterval >= 60 ? "Every 1 hour" : `Every ${numericInterval} minute${numericInterval === 1 ? "" : "s"}`;
 }
@@ -494,40 +488,73 @@ function getNextOvernightServerRefreshLabelForUi(now = new Date()) {
   return "Sunday at 12:30 AM ET";
 }
 
-function getNextServerRefreshLabel(settings, enabledOverride, intervalOverride, modeOverride) {
+function getNextServerRefreshLabel(settings, enabledOverride, intervalOverride, scheduleOverrides = {}) {
   const enabled = typeof enabledOverride === "boolean" ? enabledOverride : Boolean(settings?.settings?.enabled);
-  const mode = modeOverride || settings?.settings?.mode || SERVER_REFRESH_MODE_INTERVAL;
+  const daytimeIntervalEnabled =
+    typeof scheduleOverrides.daytimeIntervalEnabled === "boolean"
+      ? scheduleOverrides.daytimeIntervalEnabled
+      : settings?.settings?.daytimeIntervalEnabled !== false;
+  const overnightScheduleEnabled =
+    typeof scheduleOverrides.overnightScheduleEnabled === "boolean"
+      ? scheduleOverrides.overnightScheduleEnabled
+      : Boolean(settings?.settings?.overnightScheduleEnabled);
   const intervalMinutes = Number(intervalOverride || settings?.settings?.intervalMinutes) || 30;
   const refreshWindow = settings?.refreshWindow || getRefreshWindowStatus();
+  const intervalRuleEnabled = enabled && daytimeIntervalEnabled;
 
-  if (!enabled) {
+  if (!intervalRuleEnabled && !overnightScheduleEnabled) {
     return "Disabled";
   }
 
-  if (mode === SERVER_REFRESH_MODE_OVERNIGHT) {
-    const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
-    if (!lastServerRefresh) {
-      return getNextOvernightServerRefreshLabelForUi();
-    }
-
+  if (overnightScheduleEnabled && !intervalRuleEnabled) {
     return getNextOvernightServerRefreshLabelForUi();
   }
 
-  if (!refreshWindow.allowed) {
-    return refreshWindow.nextAllowedLabel ? `Blocked until ${refreshWindow.nextAllowedLabel}` : "Blocked by schedule";
+  if (intervalRuleEnabled && !overnightScheduleEnabled) {
+    if (!refreshWindow.allowed) {
+      return refreshWindow.nextAllowedLabel ? `Blocked until ${refreshWindow.nextAllowedLabel}` : "Blocked by schedule";
+    }
+
+    const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
+    if (!lastServerRefresh) {
+      return "On the next available Vercel cron tick";
+    }
+
+    const lastRunAt = new Date(lastServerRefresh).getTime();
+    if (!Number.isFinite(lastRunAt)) {
+      return "On the next available Vercel cron tick";
+    }
+
+    return formatScanTime(new Date(lastRunAt + intervalMinutes * 60 * 1000).toISOString());
   }
 
-  const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
-  if (!lastServerRefresh) {
-    return "On the next available Vercel cron tick";
+  const intervalLabel = refreshWindow.allowed
+    ? `daytime interval (${formatServerRefreshMode(intervalMinutes)}) is active now`
+    : `daytime interval waits until ${refreshWindow.nextAllowedLabel || "the next window"}`;
+  const overnightLabel = `overnight refresh resumes ${getNextOvernightServerRefreshLabelForUi()}`;
+  return `${intervalLabel}; ${overnightLabel}`;
+}
+
+function formatSelectedServerRefreshRules({
+  daytimeIntervalEnabled,
+  overnightScheduleEnabled,
+  intervalMinutes,
+}) {
+  const rules = [];
+
+  if (daytimeIntervalEnabled) {
+    rules.push(`Daytime interval: ${formatServerRefreshMode(intervalMinutes)}`);
   }
 
-  const lastRunAt = new Date(lastServerRefresh).getTime();
-  if (!Number.isFinite(lastRunAt)) {
-    return "On the next available Vercel cron tick";
+  if (overnightScheduleEnabled) {
+    rules.push("Overnight: Sunday-Friday at 12:30 AM and 1:00 AM ET");
   }
 
-  return formatScanTime(new Date(lastRunAt + intervalMinutes * 60 * 1000).toISOString());
+  if (!rules.length) {
+    return "No schedules selected";
+  }
+
+  return rules.join(" + ");
 }
 
 function getInitialTheme() {
@@ -945,9 +972,9 @@ function App() {
   const [vaultEmailForwardingAddress, setVaultEmailForwardingAddress] = useState("");
   const [vaultEmailAppUrl, setVaultEmailAppUrl] = useState(APP_BASE_URL);
   const [serverRefreshSettings, setServerRefreshSettings] = useState(null);
-  const [serverRefreshEnabled, setServerRefreshEnabled] = useState(true);
   const [browserRefreshGloballyEnabled, setBrowserRefreshGloballyEnabled] = useState(true);
-  const [serverRefreshMode, setServerRefreshMode] = useState(SERVER_REFRESH_MODE_INTERVAL);
+  const [serverRefreshDaytimeIntervalEnabled, setServerRefreshDaytimeIntervalEnabled] = useState(true);
+  const [serverRefreshOvernightEnabled, setServerRefreshOvernightEnabled] = useState(false);
   const [serverRefreshIntervalMinutes, setServerRefreshIntervalMinutes] = useState(30);
   const [serverRefreshSaving, setServerRefreshSaving] = useState(false);
   const [serverRefreshMessage, setServerRefreshMessage] = useState("");
@@ -1559,9 +1586,9 @@ function App() {
     }
 
     setServerRefreshSettings(payload);
-    setServerRefreshEnabled(Boolean(payload.settings?.enabled));
     setBrowserRefreshGloballyEnabled(payload.settings?.browserRefreshEnabled !== false);
-    setServerRefreshMode(payload.settings?.mode || SERVER_REFRESH_MODE_INTERVAL);
+    setServerRefreshDaytimeIntervalEnabled(payload.settings?.daytimeIntervalEnabled !== false);
+    setServerRefreshOvernightEnabled(Boolean(payload.settings?.overnightScheduleEnabled));
     setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
     lastServerRefreshSeenRef.current = payload.lastServerRefresh?.scannedAt || lastServerRefreshSeenRef.current;
     setServerRefreshMessage("");
@@ -1578,9 +1605,10 @@ function App() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          enabled: serverRefreshEnabled,
+          enabled: serverRefreshDaytimeIntervalEnabled,
           browserRefreshEnabled: browserRefreshGloballyEnabled,
-          mode: serverRefreshMode,
+          daytimeIntervalEnabled: serverRefreshDaytimeIntervalEnabled,
+          overnightScheduleEnabled: serverRefreshOvernightEnabled,
           intervalMinutes: serverRefreshIntervalMinutes,
         }),
       });
@@ -1591,9 +1619,9 @@ function App() {
       }
 
       setServerRefreshSettings(payload);
-      setServerRefreshEnabled(Boolean(payload.settings?.enabled));
       setBrowserRefreshGloballyEnabled(payload.settings?.browserRefreshEnabled !== false);
-      setServerRefreshMode(payload.settings?.mode || SERVER_REFRESH_MODE_INTERVAL);
+      setServerRefreshDaytimeIntervalEnabled(payload.settings?.daytimeIntervalEnabled !== false);
+      setServerRefreshOvernightEnabled(Boolean(payload.settings?.overnightScheduleEnabled));
       setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
       setServerRefreshMessage("Server refresh settings saved.");
     } catch (saveError) {
@@ -2087,9 +2115,9 @@ function App() {
       setVaultEmailForwardingAddress("");
       setVaultEmailAppUrl(APP_BASE_URL);
       setServerRefreshSettings(null);
-      setServerRefreshEnabled(true);
       setBrowserRefreshGloballyEnabled(true);
-      setServerRefreshMode(SERVER_REFRESH_MODE_INTERVAL);
+      setServerRefreshDaytimeIntervalEnabled(true);
+      setServerRefreshOvernightEnabled(false);
       setServerRefreshIntervalMinutes(30);
       setServerRefreshSaving(false);
       setServerRefreshMessage("");
@@ -2603,6 +2631,17 @@ function App() {
   }, [categoryFilter, purchasableFilter, hotFilter, data, hotItems]);
 
   const browserRefreshRateOptions = appUser?.role === "admin" ? REFRESH_RATE_OPTIONS : VIEWER_REFRESH_RATE_OPTIONS;
+  const effectiveServerRefreshDaytimeIntervalEnabled =
+    typeof serverRefreshSettings?.settings?.daytimeIntervalEnabled === "boolean"
+      ? serverRefreshSettings.settings.daytimeIntervalEnabled !== false
+      : serverRefreshDaytimeIntervalEnabled;
+  const effectiveServerRefreshOvernightEnabled =
+    typeof serverRefreshSettings?.settings?.overnightScheduleEnabled === "boolean"
+      ? Boolean(serverRefreshSettings.settings.overnightScheduleEnabled)
+      : serverRefreshOvernightEnabled;
+  const effectiveServerRefreshIntervalMinutes =
+    Number(serverRefreshSettings?.settings?.intervalMinutes || serverRefreshIntervalMinutes) || 30;
+  const effectiveServerRefreshEnabled = effectiveServerRefreshDaytimeIntervalEnabled;
   const browserRefreshStatusLabel = formatBrowserRefreshStatus({
     localEnabled: autoRefreshEnabled,
     globalEnabled: browserRefreshGloballyEnabled,
@@ -3373,7 +3412,7 @@ function App() {
                         ? `Run fresh scan (${manualBlockedRefreshCooldownSeconds}s)`
                         : "Run fresh scan"}
                     </button>
-                    ${manualRefreshHelperMessage ? html`<p className="section-note">${manualRefreshHelperMessage}</p>` : null}
+                    ${manualRefreshHelperMessage ? html`<p className="section-note section-note-nowrap">${manualRefreshHelperMessage}</p>` : null}
                   </div>
             <div className="hero-status-stack">
               <div
@@ -3450,7 +3489,7 @@ function App() {
                 <div className="scan-meta">
                   <div className="countdown-row" aria-live="polite">
                     <strong>Next auto refresh:</strong>
-                    <span>${browserRefreshStatusLabel}</span>
+                    <span className="countdown-status-text">${browserRefreshStatusLabel}</span>
                   </div>
                   <div className="refresh-controls-row">
                     <div className="refresh-rate-row">
@@ -3538,9 +3577,12 @@ function App() {
                             appUser?.role === "admin"
                               ? getNextServerRefreshLabel(
                                   serverRefreshSettings,
-                                  serverRefreshEnabled,
-                                  serverRefreshIntervalMinutes,
-                                  serverRefreshMode,
+                                  effectiveServerRefreshEnabled,
+                                  effectiveServerRefreshIntervalMinutes,
+                                  {
+                                    daytimeIntervalEnabled: effectiveServerRefreshDaytimeIntervalEnabled,
+                                    overnightScheduleEnabled: effectiveServerRefreshOvernightEnabled,
+                                  },
                                 )
                               : "Admin only"
                           }
@@ -4405,20 +4447,6 @@ function App() {
                   </div>
                   <label className="profile-toggle-row">
                     <span>
-                      <strong>Enable server-side refresh</strong>
-                      <small>Turn background Vercel cron scans on or off.</small>
-                    </span>
-                    <button
-                      type="button"
-                      className=${`profile-toggle ${serverRefreshEnabled ? "profile-toggle-on" : ""}`}
-                      aria-pressed=${serverRefreshEnabled}
-                      onClick=${() => setServerRefreshEnabled((currentValue) => !currentValue)}
-                    >
-                      <span className="profile-toggle-knob"></span>
-                    </button>
-                  </label>
-                  <label className="profile-toggle-row">
-                    <span>
                       <strong>Enable browser refreshes</strong>
                       <small>Allow browser-triggered refreshes, including Run fresh scan and auto refresh, during the allowed weekday window.</small>
                     </span>
@@ -4439,10 +4467,13 @@ function App() {
                       </span>
                       <button
                         type="button"
-                        className=${`button button-secondary button-small ${serverRefreshMode === SERVER_REFRESH_MODE_INTERVAL ? "profile-critical-active" : ""}`}
-                        onClick=${() => setServerRefreshMode(SERVER_REFRESH_MODE_INTERVAL)}
+                        className=${`button button-secondary button-small ${
+                          serverRefreshDaytimeIntervalEnabled ? "profile-critical-active" : ""
+                        }`}
+                        onClick=${() =>
+                          setServerRefreshDaytimeIntervalEnabled((currentValue) => !currentValue)}
                       >
-                        Select
+                        ${serverRefreshDaytimeIntervalEnabled ? "Selected" : "Enable"}
                       </button>
                     </div>
                     <div className="profile-toggle-row profile-toggle-card">
@@ -4452,14 +4483,16 @@ function App() {
                       </span>
                       <button
                         type="button"
-                        className=${`button button-secondary button-small ${serverRefreshMode === SERVER_REFRESH_MODE_OVERNIGHT ? "profile-critical-active" : ""}`}
-                        onClick=${() => setServerRefreshMode(SERVER_REFRESH_MODE_OVERNIGHT)}
+                        className=${`button button-secondary button-small ${
+                          serverRefreshOvernightEnabled ? "profile-critical-active" : ""
+                        }`}
+                        onClick=${() => setServerRefreshOvernightEnabled((currentValue) => !currentValue)}
                       >
-                        Select
+                        ${serverRefreshOvernightEnabled ? "Selected" : "Enable"}
                       </button>
                     </div>
                   </div>
-                  ${serverRefreshMode === SERVER_REFRESH_MODE_INTERVAL
+                  ${serverRefreshDaytimeIntervalEnabled
                     ? html`
                         <div className="profile-alert-grid">
                     ${SERVER_REFRESH_INTERVAL_OPTIONS.map(
@@ -4478,9 +4511,17 @@ function App() {
                             className=${`button button-secondary button-small ${
                               serverRefreshIntervalMinutes === intervalMinutes ? "profile-critical-active" : ""
                             }`}
-                            onClick=${() => setServerRefreshIntervalMinutes(intervalMinutes)}
+                            onClick=${() => {
+                              if (serverRefreshIntervalMinutes === intervalMinutes) {
+                                setServerRefreshDaytimeIntervalEnabled(false);
+                                return;
+                              }
+
+                              setServerRefreshIntervalMinutes(intervalMinutes);
+                              setServerRefreshDaytimeIntervalEnabled(true);
+                            }}
                           >
-                            Select
+                            ${serverRefreshIntervalMinutes === intervalMinutes ? "Unselect" : "Select"}
                           </button>
                         </div>
                       `,
@@ -4496,12 +4537,19 @@ function App() {
                         : "Not run yet"}
                     </span>
                     <span>
-                      Active refresh rate:
-                      ${formatServerRefreshMode(serverRefreshIntervalMinutes, serverRefreshMode)}
+                      Selected server rules:
+                      ${formatSelectedServerRefreshRules({
+                        daytimeIntervalEnabled: effectiveServerRefreshDaytimeIntervalEnabled,
+                        overnightScheduleEnabled: effectiveServerRefreshOvernightEnabled,
+                        intervalMinutes: effectiveServerRefreshIntervalMinutes,
+                      })}
                     </span>
                     <span>
                       Next eligible refresh:
-                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshIntervalMinutes, serverRefreshMode)}
+                      ${getNextServerRefreshLabel(serverRefreshSettings, effectiveServerRefreshEnabled, effectiveServerRefreshIntervalMinutes, {
+                        daytimeIntervalEnabled: effectiveServerRefreshDaytimeIntervalEnabled,
+                        overnightScheduleEnabled: effectiveServerRefreshOvernightEnabled,
+                      })}
                     </span>
                     <span>
                       Platform limit:

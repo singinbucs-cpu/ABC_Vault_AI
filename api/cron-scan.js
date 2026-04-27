@@ -4,7 +4,7 @@ const {
   isScanStorageConfigured,
   saveSnapshot,
 } = require("../lib/scan-history-db");
-const { getServerRefreshSettings, SERVER_REFRESH_MODES } = require("../lib/server-refresh-settings-db");
+const { getServerRefreshSettings } = require("../lib/server-refresh-settings-db");
 const { getRefreshWindowStatus, REFRESH_WINDOW_TIMEZONE } = require("../lib/refresh-window");
 
 function getEasternScheduleParts(now = new Date()) {
@@ -85,22 +85,51 @@ async function shouldRunServerRefresh() {
   const settings = await getServerRefreshSettings();
   const lastServerRefresh = await getLatestServerRefreshSnapshotSummary();
   const refreshWindow = getRefreshWindowStatus();
-  const mode = settings.mode || SERVER_REFRESH_MODES.INTERVAL;
+  const intervalSelected = settings.daytimeIntervalEnabled !== false;
+  const intervalEnabled = Boolean(settings.enabled) && intervalSelected;
+  const overnightEnabled = Boolean(settings.overnightScheduleEnabled);
 
-  if (!settings.enabled) {
+  if (!intervalEnabled && !overnightEnabled) {
     return {
       shouldRun: false,
       settings,
       lastServerRefresh,
       refreshWindow,
-      reason: "Server-side refresh is disabled by admin settings.",
+      reason: intervalSelected
+        ? "Recurring interval refresh is disabled and no overnight schedule is selected."
+        : "No server refresh schedules are selected.",
     };
   }
 
-  if (mode === SERVER_REFRESH_MODES.OVERNIGHT) {
+  if (overnightEnabled) {
     const nowParts = getEasternScheduleParts();
 
-    if (!isOvernightServerRefreshSlot(nowParts)) {
+    if (isOvernightServerRefreshSlot(nowParts)) {
+      const currentSlotKey = getOvernightSlotKey(nowParts);
+      const lastSlotKey = lastServerRefresh?.scannedAt
+        ? getOvernightSlotKey(getEasternScheduleParts(new Date(lastServerRefresh.scannedAt)))
+        : "";
+
+      if (currentSlotKey !== lastSlotKey) {
+        return {
+          shouldRun: true,
+          settings,
+          lastServerRefresh,
+          refreshWindow,
+          reason: `Running the overnight refresh for ${formatOvernightSlotLabel(nowParts)} on ${nowParts.weekday}.`,
+        };
+      }
+
+      if (!intervalEnabled) {
+        return {
+          shouldRun: false,
+          settings,
+          lastServerRefresh,
+          refreshWindow,
+          reason: `The ${formatOvernightSlotLabel(nowParts)} overnight refresh already ran for this slot.`,
+        };
+      }
+    } else if (!intervalEnabled) {
       return {
         shouldRun: false,
         settings,
@@ -109,28 +138,17 @@ async function shouldRunServerRefresh() {
         reason: `Waiting for the overnight schedule. Next run: ${getNextOvernightServerRefreshLabel(nowParts)}.`,
       };
     }
+  }
 
-    const currentSlotKey = getOvernightSlotKey(nowParts);
-    const lastSlotKey = lastServerRefresh?.scannedAt
-      ? getOvernightSlotKey(getEasternScheduleParts(new Date(lastServerRefresh.scannedAt)))
-      : "";
-
-    if (currentSlotKey === lastSlotKey) {
-      return {
-        shouldRun: false,
-        settings,
-        lastServerRefresh,
-        refreshWindow,
-        reason: `The ${formatOvernightSlotLabel(nowParts)} overnight refresh already ran for this slot.`,
-      };
-    }
-
+  if (!intervalEnabled) {
     return {
-      shouldRun: true,
+      shouldRun: false,
       settings,
       lastServerRefresh,
       refreshWindow,
-      reason: `Running the overnight refresh for ${formatOvernightSlotLabel(nowParts)} on ${nowParts.weekday}.`,
+      reason: intervalSelected
+        ? "Recurring interval refresh is disabled."
+        : "Daytime interval refresh is not selected.",
     };
   }
 

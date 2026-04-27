@@ -723,6 +723,10 @@ textarea {
   box-shadow: none;
 }
 
+.countdown-status-text {
+  white-space: nowrap;
+}
+
 .scan-status-dot {
   width: 10px;
   height: 10px;
@@ -871,6 +875,10 @@ textarea {
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.section-note-nowrap {
+  white-space: nowrap;
 }
 
 .pill-row,

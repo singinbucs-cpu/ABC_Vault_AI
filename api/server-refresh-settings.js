@@ -2,7 +2,6 @@ const { requireAppUser } = require("../lib/auth");
 const {
   getServerRefreshSettings,
   isServerRefreshStorageConfigured,
-  SERVER_REFRESH_MODES,
   updateServerRefreshSettings,
 } = require("../lib/server-refresh-settings-db");
 const { getLatestServerRefreshSnapshotSummary } = require("../lib/scan-history-db");
@@ -46,14 +45,14 @@ module.exports = async (req, res) => {
             limitations: {
               minimumServerInterval: "1 minute",
               schedulingExplanation:
-                "Vercel cron jobs wake the server once per minute. Browser refreshes stay limited to Monday-Friday from 8:00 AM to 5:00 PM ET, while server refreshes can run either on a minute interval inside that daytime window or on the overnight Sunday-Friday schedule at 12:30 AM and 1:00 AM ET.",
-              availableModes: [
+                "Vercel cron jobs wake the server once per minute. Browser refreshes stay limited to Monday-Friday from 8:00 AM to 5:00 PM ET, while server refreshes can combine a daytime interval rule with the overnight Sunday-Friday schedule at 12:30 AM and 1:00 AM ET.",
+              availableSchedules: [
                 {
-                  value: SERVER_REFRESH_MODES.INTERVAL,
+                  value: "daytime_interval",
                   label: "Interval inside the daytime refresh window",
                 },
                 {
-                  value: SERVER_REFRESH_MODES.OVERNIGHT,
+                  value: "overnight_sun_fri_1230_1am_et",
                   label: "Sunday-Friday at 12:30 AM and 1:00 AM ET",
                 },
               ],
@@ -72,7 +71,8 @@ module.exports = async (req, res) => {
         enabled: body.enabled,
         browserRefreshEnabled: body.browserRefreshEnabled,
         intervalMinutes: body.intervalMinutes,
-        mode: body.mode,
+        daytimeIntervalEnabled: body.daytimeIntervalEnabled,
+        overnightScheduleEnabled: body.overnightScheduleEnabled,
       });
       const lastServerRefresh = await getLatestServerRefreshSnapshotSummary();
 
@@ -86,14 +86,14 @@ module.exports = async (req, res) => {
             limitations: {
               minimumServerInterval: "1 minute",
               schedulingExplanation:
-                "Vercel cron jobs wake the server once per minute. Browser refreshes stay limited to Monday-Friday from 8:00 AM to 5:00 PM ET, while server refreshes can run either on a minute interval inside that daytime window or on the overnight Sunday-Friday schedule at 12:30 AM and 1:00 AM ET.",
-              availableModes: [
+                "Vercel cron jobs wake the server once per minute. Browser refreshes stay limited to Monday-Friday from 8:00 AM to 5:00 PM ET, while server refreshes can combine a daytime interval rule with the overnight Sunday-Friday schedule at 12:30 AM and 1:00 AM ET.",
+              availableSchedules: [
                 {
-                  value: SERVER_REFRESH_MODES.INTERVAL,
+                  value: "daytime_interval",
                   label: "Interval inside the daytime refresh window",
                 },
                 {
-                  value: SERVER_REFRESH_MODES.OVERNIGHT,
+                  value: "overnight_sun_fri_1230_1am_et",
                   label: "Sunday-Friday at 12:30 AM and 1:00 AM ET",
                 },
               ],
