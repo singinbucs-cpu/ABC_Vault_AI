@@ -10,7 +10,11 @@ const requestOtpHandler = require("./api/request-otp");
 const meHandler = require("./api/me");
 const meStreamHandler = require("./api/me-stream");
 const pushoverTestHandler = require("./api/pushover-test");
+const changeNotificationsHandler = require("./api/change-notifications");
 const serverRefreshSettingsHandler = require("./api/server-refresh-settings");
+const vercelSpendWebhookHandler = require("./api/vercel-spend-webhook");
+const vercelSpendWebhookSettingsHandler = require("./api/vercel-spend-webhook-settings");
+const remoteBrowserHandler = require("./api/remote-browser");
 const vaultKeyEmailHandler = require("./api/vault-key-email");
 const vaultEmailEventsHandler = require("./api/vault-email-events");
 
@@ -54,6 +58,7 @@ function createNodeRequest(req, url, body) {
     headers: req.headers,
     query: Object.fromEntries(url.searchParams.entries()),
     body,
+    rawBody: typeof body === "string" ? body : undefined,
   };
 }
 
@@ -108,6 +113,21 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "scan_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/change-notifications") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+
+      await changeNotificationsHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "change_notifications_failed",
         message: error.message,
       });
     }
@@ -227,6 +247,70 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "server_refresh_settings_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/vercel-spend-webhook-settings") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      const parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+      const nodeReq = createNodeRequest(req, url, parsedBody);
+      nodeReq.rawBody = rawBody;
+      await vercelSpendWebhookSettingsHandler(nodeReq, sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "vercel_spend_webhook_settings_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/vercel-spend-webhook") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      let parsedBody = undefined;
+
+      if (rawBody) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch {
+          parsedBody = rawBody;
+        }
+      }
+
+      const nodeReq = createNodeRequest(req, url, parsedBody);
+      nodeReq.rawBody = rawBody;
+      await vercelSpendWebhookHandler(nodeReq, sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "vercel_spend_webhook_failed",
+        message: error.message,
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/remote-browser") {
+    try {
+      const rawBody = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readRequestBody(req) : "";
+      let parsedBody = undefined;
+
+      if (rawBody) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch {
+          parsedBody = rawBody;
+        }
+      }
+
+      await remoteBrowserHandler(createNodeRequest(req, url, parsedBody), sendNodeResponse(res));
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "remote_browser_failed",
         message: error.message,
       });
     }

@@ -55,6 +55,10 @@
       "dest": "/api/me-stream.js"
     },
     {
+      "src": "/api/change-notifications",
+      "dest": "/api/change-notifications.js"
+    },
+    {
       "src": "/api/cron-scan",
       "dest": "/api/cron-scan.js"
     },
@@ -69,6 +73,18 @@
     {
       "src": "/api/server-refresh-settings",
       "dest": "/api/server-refresh-settings.js"
+    },
+    {
+      "src": "/api/vercel-spend-webhook-settings",
+      "dest": "/api/vercel-spend-webhook-settings.js"
+    },
+    {
+      "src": "/api/vercel-spend-webhook",
+      "dest": "/api/vercel-spend-webhook.js"
+    },
+    {
+      "src": "/api/remote-browser",
+      "dest": "/api/remote-browser.js"
     },
     {
       "src": "/api/vault-key-email",

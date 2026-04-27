@@ -7,14 +7,61 @@ const STORAGE_KEY = "abc-vault-live-scanner:last-scan:v1";
 const THEME_STORAGE_KEY = "abc-vault-live-scanner:theme:v1";
 const MAGIC_LINK_COOLDOWN_KEY = "abc-vault-live-scanner:magic-link-cooldown:v1";
 const IN_APP_NOTIFICATIONS_KEY = "abc-vault-live-scanner:in-app-notifications:v1";
+const PENDING_VAULT_PRODUCT_KEY = "abc-vault-live-scanner:pending-vault-product:v1";
 const APP_BASE_URL = "https://abc-vault-live-scanner.vercel.app/";
 const ABC_VAULT_URL = "https://theabcvault.com/";
+const ABC_VAULT_SHOP_URL = "https://theabcvault.com/shop/";
 const AUTO_REFRESH_SECONDS = 30;
+const REFRESH_WINDOW_TIMEZONE = "America/New_York";
+const REFRESH_WINDOW_START_HOUR = 8;
+const REFRESH_WINDOW_END_HOUR = 17;
+const AUTH_SYNC_INTERVAL_MS = 30 * 60 * 1000;
+const LIVE_SYNC_LEASE_KEY = "abc-vault-live-scanner:live-sync-owner:v1";
+const LIVE_SYNC_LEASE_MS = 45 * 1000;
+const LIVE_SYNC_HEARTBEAT_MS = 15 * 1000;
+const LIVE_SYNC_BROADCAST_CHANNEL = "abc-vault-live-scanner:live-sync:v1";
 const REFRESH_RATE_OPTIONS = [1, 2, 5, 10, 15, 30];
 const VIEWER_REFRESH_RATE_OPTIONS = [5, 10, 15, 30];
 const SERVER_REFRESH_INTERVAL_OPTIONS = [1, 5, 10, 30, 60];
 const MAGIC_LINK_COOLDOWN_SECONDS = 60;
 const CELEBRATION_CONFETTI_COUNT = 18;
+const REFRESH_WINDOW_WEEKDAY_INDEX = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+const SERVER_REFRESH_MODE_INTERVAL = "interval_minutes";
+const SERVER_REFRESH_MODE_OVERNIGHT = "overnight_sun_fri_1230_1am_et";
+
+function createClientTabId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+
+  return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function readLiveSyncLease() {
+  try {
+    const rawValue = window.localStorage.getItem(LIVE_SYNC_LEASE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    if (!parsed?.tabId || !parsed?.expiresAt) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 function createEmptyChangeFeed() {
   return {
@@ -326,17 +373,148 @@ function formatBooleanStatus(value) {
   return "Not attempted yet";
 }
 
-function formatServerRefreshMode(intervalMinutes) {
+function formatServerRefreshMode(intervalMinutes, mode = SERVER_REFRESH_MODE_INTERVAL) {
+  if (mode === SERVER_REFRESH_MODE_OVERNIGHT) {
+    return "Sunday-Friday, 12:30 AM and 1:00 AM ET";
+  }
+
   const numericInterval = Number(intervalMinutes) || 30;
   return numericInterval >= 60 ? "Every 1 hour" : `Every ${numericInterval} minute${numericInterval === 1 ? "" : "s"}`;
 }
 
-function getNextServerRefreshLabel(settings, enabledOverride, intervalOverride) {
+function getRefreshWindowParts(now = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: REFRESH_WINDOW_TIMEZONE,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(now);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const weekdayIndex = REFRESH_WINDOW_WEEKDAY_INDEX[values.weekday] ?? -1;
+
+  return {
+    weekday: values.weekday || "",
+    weekdayIndex,
+    hour: Number(values.hour || 0),
+    minute: Number(values.minute || 0),
+  };
+}
+
+function getNextAllowedRefreshLabel(parts) {
+  if (parts.weekdayIndex >= 1 && parts.weekdayIndex <= 5 && parts.hour < REFRESH_WINDOW_START_HOUR) {
+    return "Today at 8:00 AM ET";
+  }
+
+  if (parts.weekdayIndex >= 1 && parts.weekdayIndex <= 4) {
+    return "Tomorrow at 8:00 AM ET";
+  }
+
+  return "Monday at 8:00 AM ET";
+}
+
+function getRefreshWindowStatus(now = new Date()) {
+  const parts = getRefreshWindowParts(now);
+  const isWeekday = parts.weekdayIndex >= 1 && parts.weekdayIndex <= 5;
+  const isWithinHours = parts.hour >= REFRESH_WINDOW_START_HOUR && parts.hour < REFRESH_WINDOW_END_HOUR;
+  const allowed = isWeekday && isWithinHours;
+
+  if (allowed) {
+    return {
+      allowed: true,
+      scheduleLabel: "Monday-Friday, 8:00 AM-5:00 PM ET",
+      blockedReason: "",
+      nextAllowedLabel: null,
+    };
+  }
+
+  const blockedReason = !isWeekday
+    ? "Refreshes are blocked on weekends."
+    : parts.hour < REFRESH_WINDOW_START_HOUR
+    ? "Refreshes are blocked before 8:00 AM ET."
+    : "Refreshes are blocked after 5:00 PM ET.";
+
+  return {
+    allowed: false,
+    scheduleLabel: "Monday-Friday, 8:00 AM-5:00 PM ET",
+    blockedReason,
+    nextAllowedLabel: getNextAllowedRefreshLabel(parts),
+  };
+}
+
+function formatBrowserRefreshStatus({ localEnabled, globalEnabled, refreshWindowAllowed, refreshWindowBlockedReason, nextAllowedLabel, loading, countdown }) {
+  if (!globalEnabled) {
+    return "Disabled by Server Page setting";
+  }
+
+  if (!refreshWindowAllowed) {
+    return `${refreshWindowBlockedReason} Next window: ${nextAllowedLabel}.`;
+  }
+
+  if (!localEnabled) {
+    return "Paused";
+  }
+
+  if (loading) {
+    return "Waiting for current scan...";
+  }
+
+  return `${countdown}s`;
+}
+
+function formatVercelSpendEventType(eventType) {
+  if (eventType === "budget_threshold_reached") {
+    return "Budget threshold reached";
+  }
+
+  if (eventType === "end_of_billing_cycle") {
+    return "Billing cycle ended";
+  }
+
+  return eventType || "No event received yet";
+}
+
+function getNextOvernightServerRefreshLabelForUi(now = new Date()) {
+  const parts = getRefreshWindowParts(now);
+  const isAllowedDay = parts.weekdayIndex >= 0 && parts.weekdayIndex <= 5;
+
+  if (isAllowedDay && parts.hour === 0 && parts.minute < 30) {
+    return "Today at 12:30 AM ET";
+  }
+
+  if (isAllowedDay && (parts.hour === 0 || (parts.hour === 1 && parts.minute === 0))) {
+    return "Today at 1:00 AM ET";
+  }
+
+  if (parts.weekdayIndex >= 0 && parts.weekdayIndex <= 4) {
+    return "Tomorrow at 12:30 AM ET";
+  }
+
+  return "Sunday at 12:30 AM ET";
+}
+
+function getNextServerRefreshLabel(settings, enabledOverride, intervalOverride, modeOverride) {
   const enabled = typeof enabledOverride === "boolean" ? enabledOverride : Boolean(settings?.settings?.enabled);
+  const mode = modeOverride || settings?.settings?.mode || SERVER_REFRESH_MODE_INTERVAL;
   const intervalMinutes = Number(intervalOverride || settings?.settings?.intervalMinutes) || 30;
+  const refreshWindow = settings?.refreshWindow || getRefreshWindowStatus();
 
   if (!enabled) {
     return "Disabled";
+  }
+
+  if (mode === SERVER_REFRESH_MODE_OVERNIGHT) {
+    const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
+    if (!lastServerRefresh) {
+      return getNextOvernightServerRefreshLabelForUi();
+    }
+
+    return getNextOvernightServerRefreshLabelForUi();
+  }
+
+  if (!refreshWindow.allowed) {
+    return refreshWindow.nextAllowedLabel ? `Blocked until ${refreshWindow.nextAllowedLabel}` : "Blocked by schedule";
   }
 
   const lastServerRefresh = settings?.lastServerRefresh?.scannedAt;
@@ -385,6 +563,36 @@ function getInitialMagicLinkCooldown() {
     return Math.max(0, Math.ceil((nextAllowedAt - Date.now()) / 1000));
   } catch {
     return 0;
+  }
+}
+
+function getInitialPendingVaultProduct() {
+  try {
+    const raw = window.localStorage.getItem(PENDING_VAULT_PRODUCT_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const product = JSON.parse(raw);
+    return product?.productUrl ? product : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingVaultProduct(product) {
+  try {
+    window.localStorage.setItem(PENDING_VAULT_PRODUCT_KEY, JSON.stringify(product));
+  } catch {
+    // Keep the in-session helper working even when storage is unavailable.
+  }
+}
+
+function clearPendingVaultProductStorage() {
+  try {
+    window.localStorage.removeItem(PENDING_VAULT_PRODUCT_KEY);
+  } catch {
+    // Ignore storage failures; the visible state is still cleared.
   }
 }
 
@@ -485,7 +693,7 @@ function renderLinkedProductName(item, onProductLinkClick = null) {
           className="product-link"
           href=${item.productUrl}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           onClick=${onProductLinkClick ? (event) => onProductLinkClick(event, item) : undefined}
         >
           ${item.productName}
@@ -562,7 +770,6 @@ function renderStatPreview(items, emptyLabel, options = {}) {
     <div
       className=${`stat-preview-list ${showFullListOnHover && remainingCount ? "stat-preview-hoverable" : ""}`}
       tabIndex=${showFullListOnHover && remainingCount ? 0 : undefined}
-      title=${showFullListOnHover && remainingCount ? fullListLabel : undefined}
       aria-label=${showFullListOnHover && remainingCount ? `${fullNames.length} items. Focus or hover to see the full list.` : undefined}
     >
       ${previewNames.map((name) => html`<div className="stat-preview-item">${name}</div>`)}
@@ -602,14 +809,11 @@ function renderVaultEmailEvent(event, onDelete) {
         </div>
       </div>
       <div className="manager-meta manager-meta-stack">
+        <span>Subject: ${event.subject || "No subject captured"}</span>
         <span>Received: ${formatScanTime(eventTime)}</span>
         <span>From: ${event.fromAddress || "Not captured"}</span>
         <span>Matched user: ${event.matchedUserEmail || "No user matched"}</span>
         <span>Vault key: ${event.vaultKeyCode || "Not found"}</span>
-        <span>
-          Gmail confirmation code:
-          ${event.confirmationCode ? html`<code>${event.confirmationCode}</code>` : "Not found"}
-        </span>
         <span>Recipients: ${recipientEmails.length ? recipientEmails.join(", ") : "Not captured"}</span>
         <span>Candidate emails: ${candidateEmails.length ? candidateEmails.join(", ") : "None captured"}</span>
         <span>Message: ${event.message || "No message stored"}</span>
@@ -619,7 +823,7 @@ function renderVaultEmailEvent(event, onDelete) {
             <div className="manager-meta manager-meta-stack">
               ${confirmationLinks.map(
                 (link, index) => html`
-                  <a className="product-link" href=${link} target="_blank" rel="noreferrer">
+                  <a className="product-link" href=${link} target="_blank" rel="noopener noreferrer">
                     Open Gmail confirmation link ${index + 1}
                   </a>
                 `,
@@ -631,7 +835,10 @@ function renderVaultEmailEvent(event, onDelete) {
         ? html`
             <details className="email-event-preview">
               <summary>View stored email preview</summary>
-              <p>${event.preview}</p>
+              <div className="email-event-preview-body">
+                <div className="email-event-preview-label">Stored message preview</div>
+                <p>${event.preview}</p>
+              </div>
             </details>
           `
         : null}
@@ -675,6 +882,7 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [session, setSession] = useState(null);
   const [appUser, setAppUser] = useState(null);
+  const [isLiveSyncOwner, setIsLiveSyncOwner] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
   const [authCode, setAuthCode] = useState("");
   const [otpRequested, setOtpRequested] = useState(false);
@@ -683,20 +891,24 @@ function App() {
   const [magicLinkCooldownSeconds, setMagicLinkCooldownSeconds] = useState(() => getInitialMagicLinkCooldown());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-    const [statusMessage, setStatusMessage] = useState("Preparing first scan...");
+  const [statusMessage, setStatusMessage] = useState("Warming up the vault radar...");
     const [vaultKeyCopyMessage, setVaultKeyCopyMessage] = useState("");
     const [vaultKeyToast, setVaultKeyToast] = useState(null);
     const [celebrationBurst, setCelebrationBurst] = useState(null);
     const [selectedProductImage, setSelectedProductImage] = useState(null);
+    const [pendingVaultProduct, setPendingVaultProduct] = useState(() => getInitialPendingVaultProduct());
     const [lastCompletedScanAt, setLastCompletedScanAt] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [purchasableFilter, setPurchasableFilter] = useState("All");
   const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(AUTO_REFRESH_SECONDS);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [countdown, setCountdown] = useState(AUTO_REFRESH_SECONDS);
+  const [refreshWindowNow, setRefreshWindowNow] = useState(() => Date.now());
+  const [manualBlockedRefreshCooldownSeconds, setManualBlockedRefreshCooldownSeconds] = useState(0);
   const [inAppNotificationsEnabled, setInAppNotificationsEnabled] = useState(getInitialInAppNotificationsEnabled);
   const [changeAlert, setChangeAlert] = useState(null);
   const [changeFeed, setChangeFeed] = useState(createEmptyChangeFeed());
+  const [changeInboxMessage, setChangeInboxMessage] = useState("");
   const [changesCollapsed, setChangesCollapsed] = useState(false);
   const [hotItems, setHotItems] = useState([]);
   const [hotStorageConfigured, setHotStorageConfigured] = useState(false);
@@ -734,9 +946,26 @@ function App() {
   const [vaultEmailAppUrl, setVaultEmailAppUrl] = useState(APP_BASE_URL);
   const [serverRefreshSettings, setServerRefreshSettings] = useState(null);
   const [serverRefreshEnabled, setServerRefreshEnabled] = useState(true);
+  const [browserRefreshGloballyEnabled, setBrowserRefreshGloballyEnabled] = useState(true);
+  const [serverRefreshMode, setServerRefreshMode] = useState(SERVER_REFRESH_MODE_INTERVAL);
   const [serverRefreshIntervalMinutes, setServerRefreshIntervalMinutes] = useState(30);
   const [serverRefreshSaving, setServerRefreshSaving] = useState(false);
   const [serverRefreshMessage, setServerRefreshMessage] = useState("");
+  const [vercelSpendWebhookSettings, setVercelSpendWebhookSettings] = useState(null);
+  const [vercelSpendWebhookEnabled, setVercelSpendWebhookEnabled] = useState(true);
+  const [vercelSpendNotifyBillingCycleEnd, setVercelSpendNotifyBillingCycleEnd] = useState(true);
+  const [vercelSpendCriticalBudgetReached, setVercelSpendCriticalBudgetReached] = useState(true);
+  const [vercelSpendCriticalBillingCycleEnd, setVercelSpendCriticalBillingCycleEnd] = useState(false);
+  const [vercelSpendWebhookUrl, setVercelSpendWebhookUrl] = useState("");
+  const [vercelSpendWebhookSecretConfigured, setVercelSpendWebhookSecretConfigured] = useState(false);
+  const [vercelSpendWebhookSaving, setVercelSpendWebhookSaving] = useState(false);
+  const [vercelSpendWebhookMessage, setVercelSpendWebhookMessage] = useState("");
+  const [remoteBrowserConfigured, setRemoteBrowserConfigured] = useState(false);
+  const [remoteBrowserDashboardUrl, setRemoteBrowserDashboardUrl] = useState("");
+  const [remoteBrowserStatus, setRemoteBrowserStatus] = useState(null);
+  const [remoteBrowserLoading, setRemoteBrowserLoading] = useState(false);
+  const [remoteBrowserMessage, setRemoteBrowserMessage] = useState("");
+  const [remoteBrowserOpeningKey, setRemoteBrowserOpeningKey] = useState("");
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersSaving, setAdminUsersSaving] = useState(false);
@@ -750,12 +979,33 @@ function App() {
   const runScanRef = useRef(null);
   const loadLatestSnapshotRef = useRef(null);
   const loadServerRefreshSettingsRef = useRef(null);
+  const loadVercelSpendWebhookSettingsRef = useRef(null);
+  const loadRemoteBrowserStatusRef = useRef(null);
   const appUserRef = useRef(null);
   const lastServerRefreshSeenRef = useRef("");
   const supabaseRef = useRef(null);
+  const liveSyncTabIdRef = useRef(createClientTabId());
+  const liveSyncChannelRef = useRef(null);
   const audioContextRef = useRef(null);
   const previousAlertSignatureRef = useRef("");
   const latestLoadRef = useRef(false);
+  const refreshWindowStatus = useMemo(() => getRefreshWindowStatus(new Date(refreshWindowNow)), [refreshWindowNow]);
+  const browserRefreshAllowed = browserRefreshGloballyEnabled && refreshWindowStatus.allowed;
+  const remoteBrowserDesktopUrl = useMemo(() => {
+    if (!remoteBrowserDashboardUrl) {
+      return "";
+    }
+
+    try {
+      const url = new URL(remoteBrowserDashboardUrl);
+      url.pathname = "/desktop/vnc_lite.html";
+      url.search = "path=desktop/websockify&autoconnect=true&resize=scale";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return "";
+    }
+  }, [remoteBrowserDashboardUrl]);
 
   const applySnapshotPayload = (payload, previous) => {
     setPreviousSnapshot(previous);
@@ -793,6 +1043,22 @@ function App() {
     refreshFromServer();
   };
 
+  const broadcastLiveSyncMessage = (type, payload) => {
+    const channel = liveSyncChannelRef.current;
+    if (!channel) {
+      return;
+    }
+
+    try {
+      channel.postMessage({
+        type,
+        payload,
+      });
+    } catch {
+      // Ignore cross-tab broadcast failures and keep the local tab working.
+    }
+  };
+
   const apiFetch = async (url, options = {}) => {
     const client = supabaseRef.current;
 
@@ -816,6 +1082,24 @@ function App() {
       headers,
       cache: "no-store",
     });
+  };
+
+  const readJsonResponse = async (response, fallbackMessage) => {
+    const rawText = await response.text();
+
+    if (!rawText) {
+      return {
+        message: fallbackMessage || "The server returned an empty response.",
+      };
+    }
+
+    try {
+      return JSON.parse(rawText);
+    } catch {
+      return {
+        message: fallbackMessage || "The server returned an unreadable response.",
+      };
+    }
   };
 
   const applyAppUserPayload = (payload, options = {}) => {
@@ -1001,6 +1285,27 @@ function App() {
       return;
     }
 
+    if (!browserRefreshGloballyEnabled) {
+      setError("Browser refreshes are disabled from the Server Page.");
+      setStatusMessage("Browser refreshes are disabled from the Server Page.");
+      return;
+    }
+
+    const isAutomaticMode = mode === "auto";
+    if (!refreshWindowStatus.allowed && isAutomaticMode) {
+      const blockedMessage = `${refreshWindowStatus.blockedReason} Next allowed window: ${refreshWindowStatus.nextAllowedLabel}.`;
+      setError(blockedMessage);
+      setStatusMessage(blockedMessage);
+      return;
+    }
+
+    if (!refreshWindowStatus.allowed && manualBlockedRefreshCooldownSeconds > 0) {
+      const cooldownMessage = `Blocked-window manual scan available again in ${manualBlockedRefreshCooldownSeconds}s.`;
+      setError(cooldownMessage);
+      setStatusMessage(cooldownMessage);
+      return;
+    }
+
     loadingRef.current = true;
     setLoading(true);
     setError("");
@@ -1029,7 +1334,14 @@ function App() {
       }
 
       if (!response.ok) {
+        if (payload?.error === "manual_refresh_cooldown" && Number(payload.remainingSeconds) > 0) {
+          setManualBlockedRefreshCooldownSeconds(Number(payload.remainingSeconds));
+        }
         throw new Error(payload.message || "Scan failed.");
+      }
+
+      if (Number(payload?.manualRefreshCooldownSeconds) > 0) {
+        setManualBlockedRefreshCooldownSeconds(Number(payload.manualRefreshCooldownSeconds));
       }
 
       const currentData = dataRef.current;
@@ -1107,6 +1419,9 @@ function App() {
       }
 
       applySnapshotPayload(payload, previous);
+      await loadChangeNotifications().catch((notificationsError) => {
+        setChangeInboxMessage(notificationsError.message || "Unable to load change notifications.");
+      });
       setStatusMessage("Scan complete. Results refreshed.");
     } catch (scanError) {
       setError(scanError.message || "Scan failed.");
@@ -1149,6 +1464,9 @@ function App() {
       if (payload?.triggerSource === "vercel-cron" && payload?.scannedAt) {
         lastServerRefreshSeenRef.current = payload.scannedAt;
       }
+      await loadChangeNotifications().catch((notificationsError) => {
+        setChangeInboxMessage(notificationsError.message || "Unable to load change notifications.");
+      });
       setStatusMessage("Latest stored scan loaded.");
     } catch (loadError) {
       setError(loadError.message || "Unable to load the latest stored scan.");
@@ -1186,6 +1504,52 @@ function App() {
     }
   };
 
+  const loadChangeNotifications = async () => {
+    const response = await apiFetch("/api/change-notifications");
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? await response.json()
+      : null;
+
+    if (!payload) {
+      const text = await response.text();
+      throw new Error(`Change inbox endpoint returned non-JSON content: ${text.slice(0, 120)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.message || "Unable to load change notifications.");
+    }
+
+    setChangeFeed(payload.feed || createEmptyChangeFeed());
+    setChangeInboxMessage(payload.message || "");
+  };
+
+  const markChangeNotificationsRead = async (options = {}) => {
+    const response = await apiFetch("/api/change-notifications", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(options),
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? await response.json()
+      : null;
+
+    if (!payload) {
+      const text = await response.text();
+      throw new Error(`Change inbox endpoint returned non-JSON content: ${text.slice(0, 120)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.message || "Unable to mark notifications read.");
+    }
+
+    setChangeFeed(payload.feed || createEmptyChangeFeed());
+    setChangeInboxMessage(payload.message || "");
+  };
+
   const loadServerRefreshSettings = async () => {
     const response = await apiFetch("/api/server-refresh-settings");
     const payload = await response.json();
@@ -1196,6 +1560,8 @@ function App() {
 
     setServerRefreshSettings(payload);
     setServerRefreshEnabled(Boolean(payload.settings?.enabled));
+    setBrowserRefreshGloballyEnabled(payload.settings?.browserRefreshEnabled !== false);
+    setServerRefreshMode(payload.settings?.mode || SERVER_REFRESH_MODE_INTERVAL);
     setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
     lastServerRefreshSeenRef.current = payload.lastServerRefresh?.scannedAt || lastServerRefreshSeenRef.current;
     setServerRefreshMessage("");
@@ -1213,6 +1579,8 @@ function App() {
         },
         body: JSON.stringify({
           enabled: serverRefreshEnabled,
+          browserRefreshEnabled: browserRefreshGloballyEnabled,
+          mode: serverRefreshMode,
           intervalMinutes: serverRefreshIntervalMinutes,
         }),
       });
@@ -1224,12 +1592,150 @@ function App() {
 
       setServerRefreshSettings(payload);
       setServerRefreshEnabled(Boolean(payload.settings?.enabled));
+      setBrowserRefreshGloballyEnabled(payload.settings?.browserRefreshEnabled !== false);
+      setServerRefreshMode(payload.settings?.mode || SERVER_REFRESH_MODE_INTERVAL);
       setServerRefreshIntervalMinutes(Number(payload.settings?.intervalMinutes) || 30);
       setServerRefreshMessage("Server refresh settings saved.");
     } catch (saveError) {
       setServerRefreshMessage(saveError.message || "Unable to save server refresh settings.");
     } finally {
       setServerRefreshSaving(false);
+    }
+  };
+
+  const loadVercelSpendWebhookSettings = async () => {
+    const response = await apiFetch("/api/vercel-spend-webhook-settings");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.message || "Unable to load Billing Alerts settings.");
+    }
+
+    setVercelSpendWebhookSettings(payload.settings || null);
+    setVercelSpendWebhookEnabled(Boolean(payload.settings?.enabled));
+    setVercelSpendNotifyBillingCycleEnd(Boolean(payload.settings?.notifyBillingCycleEnd));
+    setVercelSpendCriticalBudgetReached(Boolean(payload.settings?.criticalBudgetReached));
+    setVercelSpendCriticalBillingCycleEnd(Boolean(payload.settings?.criticalBillingCycleEnd));
+    setVercelSpendWebhookUrl(payload.webhookUrl || "");
+    setVercelSpendWebhookSecretConfigured(Boolean(payload.secretConfigured));
+    setVercelSpendWebhookMessage("");
+  };
+
+  const loadRemoteBrowserStatus = async () => {
+    setRemoteBrowserLoading(true);
+
+    try {
+      const response = await apiFetch("/api/remote-browser");
+      const payload = await readJsonResponse(response, "Unable to read the remote browser status.");
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to load remote browser status.");
+      }
+
+      setRemoteBrowserConfigured(Boolean(payload.configured));
+      setRemoteBrowserDashboardUrl(payload.dashboardUrl || "");
+      setRemoteBrowserStatus(payload.status || null);
+      setRemoteBrowserMessage(payload.message || "");
+    } catch (loadError) {
+      setRemoteBrowserConfigured(false);
+      setRemoteBrowserStatus(null);
+      setRemoteBrowserMessage(loadError.message || "Unable to load remote browser status.");
+    } finally {
+      setRemoteBrowserLoading(false);
+    }
+  };
+
+  const openOnRemoteBrowser = async (item) => {
+    if (!item?.productUrl) {
+      return;
+    }
+
+    const itemKey = item.productId || item.productName || item.productUrl;
+    const latestVaultKey = (appUser?.vaultKeyCode || "").trim();
+    setRemoteBrowserOpeningKey(itemKey);
+    setRemoteBrowserMessage(
+      latestVaultKey
+        ? `Sending Vault key ${latestVaultKey} to the VPS, opening the vault link, then heading to ${item.productName}.`
+        : `Opening the vault link on the VPS, then heading to ${item.productName}.`,
+    );
+
+    try {
+      const response = await apiFetch("/api/remote-browser", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          vaultUrl: ABC_VAULT_URL,
+          productUrl: item.productUrl,
+          vaultKey: latestVaultKey,
+          label: item.productName || "Vault product",
+        }),
+      });
+      const payload = await readJsonResponse(response, "Unable to read the remote browser opener response.");
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to open the product on the remote browser.");
+      }
+
+      setRemoteBrowserConfigured(Boolean(payload.configured));
+      setRemoteBrowserDashboardUrl(payload.dashboardUrl || "");
+      setRemoteBrowserStatus(payload.status || payload.result || null);
+      setRemoteBrowserMessage(
+        payload.result?.finalUrl
+          ? `Remote browser used Vault key ${latestVaultKey || "not provided"}, opened the vault link, and reached ${payload.result.finalUrl}`
+          : `Remote browser started the vault flow for ${item.productName}.`,
+      );
+    } catch (openError) {
+      setRemoteBrowserMessage(openError.message || "Unable to open the product on the remote browser.");
+    } finally {
+      setRemoteBrowserOpeningKey("");
+    }
+  };
+
+  const openVaultLinkOnRemoteBrowser = async () => {
+    await openOnRemoteBrowser({
+      productId: "vault-link",
+      productName: "Vault Link",
+      productUrl: ABC_VAULT_SHOP_URL,
+    });
+  };
+
+  const saveVercelSpendWebhookSettings = async () => {
+    setVercelSpendWebhookSaving(true);
+    setVercelSpendWebhookMessage("");
+
+    try {
+      const response = await apiFetch("/api/vercel-spend-webhook-settings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          enabled: vercelSpendWebhookEnabled,
+          notifyBillingCycleEnd: vercelSpendNotifyBillingCycleEnd,
+          criticalBudgetReached: vercelSpendCriticalBudgetReached,
+          criticalBillingCycleEnd: vercelSpendCriticalBillingCycleEnd,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.message || "Unable to save Billing Alerts settings.");
+      }
+
+      setVercelSpendWebhookSettings(payload.settings || null);
+      setVercelSpendWebhookEnabled(Boolean(payload.settings?.enabled));
+      setVercelSpendNotifyBillingCycleEnd(Boolean(payload.settings?.notifyBillingCycleEnd));
+      setVercelSpendCriticalBudgetReached(Boolean(payload.settings?.criticalBudgetReached));
+      setVercelSpendCriticalBillingCycleEnd(Boolean(payload.settings?.criticalBillingCycleEnd));
+      setVercelSpendWebhookUrl(payload.webhookUrl || "");
+      setVercelSpendWebhookSecretConfigured(Boolean(payload.secretConfigured));
+      setVercelSpendWebhookMessage("Billing Alerts settings saved.");
+    } catch (saveError) {
+      setVercelSpendWebhookMessage(saveError.message || "Unable to save Billing Alerts settings.");
+    } finally {
+      setVercelSpendWebhookSaving(false);
     }
   };
 
@@ -1582,9 +2088,26 @@ function App() {
       setVaultEmailAppUrl(APP_BASE_URL);
       setServerRefreshSettings(null);
       setServerRefreshEnabled(true);
+      setBrowserRefreshGloballyEnabled(true);
+      setServerRefreshMode(SERVER_REFRESH_MODE_INTERVAL);
       setServerRefreshIntervalMinutes(30);
       setServerRefreshSaving(false);
       setServerRefreshMessage("");
+      setVercelSpendWebhookSettings(null);
+      setVercelSpendWebhookEnabled(true);
+      setVercelSpendNotifyBillingCycleEnd(true);
+      setVercelSpendCriticalBudgetReached(true);
+      setVercelSpendCriticalBillingCycleEnd(false);
+      setVercelSpendWebhookUrl("");
+      setVercelSpendWebhookSecretConfigured(false);
+      setVercelSpendWebhookSaving(false);
+      setVercelSpendWebhookMessage("");
+      setRemoteBrowserConfigured(false);
+      setRemoteBrowserDashboardUrl("");
+      setRemoteBrowserStatus(null);
+      setRemoteBrowserLoading(false);
+      setRemoteBrowserMessage("");
+      setRemoteBrowserOpeningKey("");
       setAdminUsers([]);
       setAdminUsersLoading(false);
       setAdminUsersSaving(false);
@@ -1605,6 +2128,9 @@ function App() {
     }
 
     loadLatestSnapshot();
+    loadChangeNotifications().catch((loadError) => {
+      setChangeInboxMessage(loadError.message || "Unable to load change notifications.");
+    });
     loadHotItems().catch((loadError) => {
       setHotStorageConfigured(false);
       setHotStorageMessage(loadError.message || "Unable to load hot items.");
@@ -1612,6 +2138,12 @@ function App() {
     if (appUser.role === "admin") {
       loadServerRefreshSettings().catch((loadError) => {
         setServerRefreshMessage(loadError.message || "Unable to load server refresh settings.");
+      });
+      loadVercelSpendWebhookSettings().catch((loadError) => {
+        setVercelSpendWebhookMessage(loadError.message || "Unable to load Billing Alerts settings.");
+      });
+      loadRemoteBrowserStatus().catch((loadError) => {
+        setRemoteBrowserMessage(loadError.message || "Unable to load remote browser status.");
       });
       loadAdminUsers().catch((loadError) => {
         setAdminUsersMessage(loadError.message || "Unable to load users.");
@@ -1623,7 +2155,162 @@ function App() {
   }, [authReady, authConfig, session, appUser?.email, appUser?.role]);
 
   useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setRefreshWindowNow(Date.now());
+    }, 60 * 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    if (manualBlockedRefreshCooldownSeconds <= 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setManualBlockedRefreshCooldownSeconds((currentValue) => {
+        if (currentValue <= 1) {
+          return 0;
+        }
+
+        return currentValue - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [manualBlockedRefreshCooldownSeconds]);
+
+  useEffect(() => {
     if (!authReady || !authConfig?.configured || !session) {
+      setIsLiveSyncOwner(true);
+      return undefined;
+    }
+
+    const tabId = liveSyncTabIdRef.current;
+    const channel =
+      typeof window.BroadcastChannel === "function" ? new window.BroadcastChannel(LIVE_SYNC_BROADCAST_CHANNEL) : null;
+    liveSyncChannelRef.current = channel;
+
+    const claimLease = () => {
+      try {
+        window.localStorage.setItem(
+          LIVE_SYNC_LEASE_KEY,
+          JSON.stringify({
+            tabId,
+            expiresAt: Date.now() + LIVE_SYNC_LEASE_MS,
+          }),
+        );
+      } catch {
+        // Ignore storage write failures and fall back to the current tab.
+      }
+
+      setIsLiveSyncOwner(true);
+    };
+
+    const releaseLease = () => {
+      const activeLease = readLiveSyncLease();
+      if (activeLease?.tabId === tabId) {
+        try {
+          window.localStorage.removeItem(LIVE_SYNC_LEASE_KEY);
+        } catch {
+          // Ignore storage removal failures.
+        }
+      }
+
+      setIsLiveSyncOwner(false);
+    };
+
+    const reconcileLeaseOwnership = ({ preferClaim = false } = {}) => {
+      const isVisible = document.visibilityState === "visible";
+      const activeLease = readLiveSyncLease();
+      const leaseExpired = !activeLease || Number(activeLease.expiresAt) <= Date.now();
+      const leaseOwnedByThisTab = activeLease?.tabId === tabId;
+
+      if (!isVisible) {
+        if (leaseOwnedByThisTab) {
+          releaseLease();
+        } else {
+          setIsLiveSyncOwner(false);
+        }
+        return;
+      }
+
+      if (preferClaim || leaseOwnedByThisTab || leaseExpired) {
+        claimLease();
+        return;
+      }
+
+      setIsLiveSyncOwner(false);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      reconcileLeaseOwnership({ preferClaim: document.visibilityState === "visible" });
+    };
+
+    const handleStorageChange = (event) => {
+      if (event.key !== LIVE_SYNC_LEASE_KEY) {
+        return;
+      }
+
+      reconcileLeaseOwnership();
+    };
+
+    const handleBroadcast = (event) => {
+      const message = event?.data;
+      if (!message?.type) {
+        return;
+      }
+
+      if (message.type === "app-user-refreshed" && message.payload) {
+        handleLiveServerRefreshUpdate(message.payload);
+        applyAppUserPayload(message.payload, { syncProfileFields: false });
+        return;
+      }
+
+      if (message.type === "server-refresh-updated" && message.payload) {
+        handleLiveServerRefreshUpdate(message.payload);
+        return;
+      }
+
+      if (message.type === "vault-key-updated" && message.payload) {
+        handleLiveServerRefreshUpdate(message.payload);
+        applyLiveVaultKeyUpdate(message.payload);
+      }
+    };
+
+    reconcileLeaseOwnership({ preferClaim: true });
+
+    const heartbeatId = window.setInterval(() => {
+      reconcileLeaseOwnership();
+    }, LIVE_SYNC_HEARTBEAT_MS);
+
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("pagehide", releaseLease);
+    window.addEventListener("beforeunload", releaseLease);
+    if (channel) {
+      channel.addEventListener("message", handleBroadcast);
+    }
+
+    return () => {
+      window.clearInterval(heartbeatId);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("pagehide", releaseLease);
+      window.removeEventListener("beforeunload", releaseLease);
+      if (channel) {
+        channel.removeEventListener("message", handleBroadcast);
+        channel.close();
+      }
+      liveSyncChannelRef.current = null;
+      releaseLease();
+    };
+  }, [authReady, authConfig, session]);
+
+  useEffect(() => {
+    if (!authReady || !authConfig?.configured || !session || !isLiveSyncOwner) {
       return undefined;
     }
 
@@ -1642,20 +2329,36 @@ function App() {
 
         handleLiveServerRefreshUpdate(payload);
         applyAppUserPayload(payload, { syncProfileFields: false });
+        broadcastLiveSyncMessage("app-user-refreshed", payload);
       } catch {
         // Ignore background refresh failures and keep the current session intact.
       }
     };
 
+    const handleUserVisible = () => {
+      if (document.visibilityState === "visible") {
+        refreshAppUserFromServer();
+      }
+    };
+
+    refreshAppUserFromServer();
+
     const intervalId = window.setInterval(() => {
       refreshAppUserFromServer();
-    }, 10000);
+    }, AUTH_SYNC_INTERVAL_MS);
 
-    return () => window.clearInterval(intervalId);
-  }, [authReady, authConfig, session]);
+    document.addEventListener("visibilitychange", handleUserVisible);
+    window.addEventListener("focus", handleUserVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleUserVisible);
+      window.removeEventListener("focus", handleUserVisible);
+    };
+  }, [authReady, authConfig, session, isLiveSyncOwner]);
 
   useEffect(() => {
-    if (!authReady || !authConfig?.configured || !session) {
+    if (!authReady || !authConfig?.configured || !session || !isLiveSyncOwner) {
       return undefined;
     }
 
@@ -1707,11 +2410,13 @@ function App() {
           buffer = parseSseChunks(buffer, (eventName, payload) => {
             if (eventName === "ready" || eventName === "server-refresh-updated") {
               handleLiveServerRefreshUpdate(payload);
+              broadcastLiveSyncMessage("server-refresh-updated", payload);
             }
 
             if (eventName === "vault-key-updated") {
               handleLiveServerRefreshUpdate(payload);
               applyLiveVaultKeyUpdate(payload);
+              broadcastLiveSyncMessage("vault-key-updated", payload);
             }
           });
         }
@@ -1741,7 +2446,7 @@ function App() {
         activeAbortController.abort();
       }
     };
-  }, [authReady, authConfig, session]);
+  }, [authReady, authConfig, session, isLiveSyncOwner]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1770,7 +2475,17 @@ function App() {
 
   useEffect(() => {
     runScanRef.current = runScan;
-  }, [data, loading, changeFeed, refreshIntervalSeconds, autoRefreshEnabled]);
+  }, [
+    data,
+    loading,
+    changeFeed,
+    refreshIntervalSeconds,
+    autoRefreshEnabled,
+    browserRefreshGloballyEnabled,
+    refreshWindowStatus.allowed,
+    refreshWindowStatus.blockedReason,
+    refreshWindowStatus.nextAllowedLabel,
+  ]);
 
   useEffect(() => {
     loadLatestSnapshotRef.current = loadLatestSnapshot;
@@ -1779,6 +2494,14 @@ function App() {
   useEffect(() => {
     loadServerRefreshSettingsRef.current = loadServerRefreshSettings;
   }, [loadServerRefreshSettings]);
+
+  useEffect(() => {
+    loadVercelSpendWebhookSettingsRef.current = loadVercelSpendWebhookSettings;
+  }, [loadVercelSpendWebhookSettings]);
+
+  useEffect(() => {
+    loadRemoteBrowserStatusRef.current = loadRemoteBrowserStatus;
+  }, [loadRemoteBrowserStatus]);
 
   useEffect(() => {
     appUserRef.current = appUser;
@@ -1807,10 +2530,10 @@ function App() {
   }, [changeAlert, inAppNotificationsEnabled]);
 
   useEffect(() => {
-    if (autoRefreshEnabled) {
+    if (autoRefreshEnabled && browserRefreshAllowed) {
       setCountdown(refreshIntervalSeconds);
     }
-  }, [refreshIntervalSeconds, autoRefreshEnabled]);
+  }, [refreshIntervalSeconds, autoRefreshEnabled, browserRefreshAllowed]);
 
   useEffect(() => {
     if (!appUser || appUser.role === "admin" || VIEWER_REFRESH_RATE_OPTIONS.includes(refreshIntervalSeconds)) {
@@ -1824,7 +2547,7 @@ function App() {
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       setCountdown((previousValue) => {
-        if (!autoRefreshEnabled) {
+        if (!autoRefreshEnabled || !browserRefreshAllowed) {
           return previousValue;
         }
 
@@ -1844,7 +2567,7 @@ function App() {
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshIntervalSeconds, autoRefreshEnabled]);
+  }, [refreshIntervalSeconds, autoRefreshEnabled, browserRefreshAllowed]);
 
   const categories = useMemo(() => {
     if (!data?.products) {
@@ -1880,6 +2603,30 @@ function App() {
   }, [categoryFilter, purchasableFilter, hotFilter, data, hotItems]);
 
   const browserRefreshRateOptions = appUser?.role === "admin" ? REFRESH_RATE_OPTIONS : VIEWER_REFRESH_RATE_OPTIONS;
+  const browserRefreshStatusLabel = formatBrowserRefreshStatus({
+    localEnabled: autoRefreshEnabled,
+    globalEnabled: browserRefreshGloballyEnabled,
+    refreshWindowAllowed: refreshWindowStatus.allowed,
+    refreshWindowBlockedReason: refreshWindowStatus.blockedReason,
+    nextAllowedLabel: refreshWindowStatus.nextAllowedLabel,
+    loading,
+    countdown,
+  });
+  const browserRefreshBlocked = !browserRefreshGloballyEnabled || !refreshWindowStatus.allowed;
+  const browserRefreshDisabledReason = !browserRefreshGloballyEnabled
+    ? "Disabled on the Server Page."
+    : !refreshWindowStatus.allowed
+    ? `${refreshWindowStatus.blockedReason} Next window: ${refreshWindowStatus.nextAllowedLabel}.`
+    : "";
+  const manualRefreshButtonDisabled =
+    loading ||
+    !browserRefreshGloballyEnabled ||
+    (!refreshWindowStatus.allowed && manualBlockedRefreshCooldownSeconds > 0);
+  const manualRefreshHelperMessage = !browserRefreshGloballyEnabled
+    ? "Manual scans are disabled on the Server Page."
+    : !refreshWindowStatus.allowed && manualBlockedRefreshCooldownSeconds > 0
+    ? `Blocked-window manual scan available again in ${manualBlockedRefreshCooldownSeconds}s.`
+    : browserRefreshDisabledReason;
 
   const notPurchasableCount = useMemo(() => {
     return (data?.products || []).filter((item) => !item.isPurchasableFromListingPage).length;
@@ -1910,23 +2657,32 @@ function App() {
     [changeFeed],
   );
 
-  const dismissChangeItem = (section, productId) => {
-    setChangeFeed((previousFeed) => ({
-      ...previousFeed,
-      [section]: previousFeed[section].filter((item) => item.productId !== productId),
-    }));
+  const dismissChangeItem = (section, item) => {
+    if (!item?.id) {
+      const productId = item?.productId;
+      setChangeFeed((previousFeed) => ({
+        ...previousFeed,
+        [section]: previousFeed[section].filter((changeItem) => changeItem.productId !== productId),
+      }));
+      return;
+    }
+
+    markChangeNotificationsRead({ ids: [item.id] }).catch((readError) => {
+      setChangeInboxMessage(readError.message || "Unable to mark notification read.");
+    });
   };
 
   const clearChangeSection = (section) => {
-    setChangeFeed((previousFeed) => ({
-      ...previousFeed,
-      [section]: [],
-    }));
+    markChangeNotificationsRead({ section }).catch((readError) => {
+      setChangeInboxMessage(readError.message || "Unable to mark notifications read.");
+    });
   };
 
   const clearAllChanges = () => {
-    setChangeFeed(createEmptyChangeFeed());
     setChangeAlert(null);
+    markChangeNotificationsRead({ all: true }).catch((readError) => {
+      setChangeInboxMessage(readError.message || "Unable to mark notifications read.");
+    });
   };
 
   const toggleHotItem = (item) => {
@@ -2018,12 +2774,81 @@ function App() {
     }
   };
 
+  const copyVercelSpendWebhookUrl = async () => {
+    if (!vercelSpendWebhookUrl) {
+      setVercelSpendWebhookMessage("Webhook URL is not available yet.");
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(vercelSpendWebhookUrl);
+        setVercelSpendWebhookMessage("Webhook URL copied.");
+        return;
+      }
+
+      const copied = fallbackCopyText(vercelSpendWebhookUrl);
+      setVercelSpendWebhookMessage(copied ? "Webhook URL copied." : "Unable to copy the webhook URL on this device.");
+    } catch {
+      const copied = fallbackCopyText(vercelSpendWebhookUrl);
+      setVercelSpendWebhookMessage(copied ? "Webhook URL copied." : "Unable to copy the webhook URL on this device.");
+    }
+  };
+
+  const copyLatestVaultKeyToClipboard = async () => {
+    const key = (appUser?.vaultKeyCode || "").trim();
+    if (!key) {
+      return false;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(key);
+        return true;
+      }
+
+      return fallbackCopyText(key);
+    } catch {
+      return fallbackCopyText(key);
+    }
+  };
+
+  const rememberPendingVaultProduct = (item) => {
+    const product = {
+      productName: item.productName || "Vault product",
+      productUrl: item.productUrl,
+      imageUrl: item.imageUrl || "",
+      imageAlt: item.imageAlt || item.productName || "Vault product image",
+      savedAt: new Date().toISOString(),
+    };
+
+    setPendingVaultProduct(product);
+    savePendingVaultProduct(product);
+    return product;
+  };
+
+  const dismissPendingVaultProduct = () => {
+    setPendingVaultProduct(null);
+    clearPendingVaultProductStorage();
+  };
+
+  const reopenPendingVaultProduct = async () => {
+    if (!pendingVaultProduct?.productUrl) {
+      return;
+    }
+
+    const copied = await copyLatestVaultKeyToClipboard();
+    setVaultKeyCopyMessage(copied ? "Vault key copied. Reopening saved product link." : "Reopening saved product link.");
+    window.open(pendingVaultProduct.productUrl, "_blank", "noopener,noreferrer");
+  };
+
   const copyVaultKeyAndOpenProductLink = async (event, item) => {
     if (!item?.productUrl) {
       return;
     }
 
     event.preventDefault();
+    rememberPendingVaultProduct(item);
     const productWindow = window.open("about:blank", "_blank");
 
     if (productWindow) {
@@ -2063,6 +2888,8 @@ function App() {
       openProduct();
     }
   };
+
+  const getRemoteOpenItemKey = (item) => item?.productId || item?.productName || item?.productUrl || "";
 
   const sendMagicLink = async (event) => {
     event.preventDefault();
@@ -2136,7 +2963,7 @@ function App() {
           setAuthError("Too many code requests were sent. Please wait about a minute and try again.");
         } else if (message.toLowerCase().includes("signups not allowed for otp")) {
           setAuthError(
-            "This email is approved in the app, but Supabase is currently blocking first-time OTP sign-ins. Enable Email signups in Supabase Auth, or add a Supabase service role key so approved users can be provisioned automatically.",
+            "This email is approved, but first-time sign-in is taking the scenic route right now. Please try again in a moment or ask an admin to finish the sign-in setup.",
           );
         } else {
           setAuthError(message);
@@ -2268,8 +3095,8 @@ function App() {
         <section className="hero">
           <div className="hero-panel auth-panel">
             <div className="eyebrow">Secure Access</div>
-            <h1>Preparing your secure Toyota-themed workspace</h1>
-            <p className="hero-copy">Checking authentication and access rules before loading the live scanner.</p>
+            <h1>Polishing the vault dashboard</h1>
+            <p className="hero-copy">Checking your access pass and warming up the scanner for a smooth start.</p>
           </div>
         </section>
       </main>
@@ -2281,15 +3108,11 @@ function App() {
       <main className="app-shell">
         <section className="hero">
           <div className="hero-panel auth-panel">
-            <div className="eyebrow">Auth Setup Needed</div>
-            <h1>Supabase Auth is not connected yet</h1>
+            <div className="eyebrow">Sign-In Setup Needed</div>
+            <h1>The sign-in gate is still waking up</h1>
             <p className="hero-copy">
-              Add
-              <code>SUPABASE_URL</code>,
-              <code>SUPABASE_ANON_KEY</code>,
-              and at least one email in
-              <code>ADMIN_EMAILS</code>
-              to finish invite-only access.
+              A few invite-only sign-in settings still need to be connected before this dashboard can open.
+              Once an admin finishes that setup, the vault doors will be ready.
             </p>
             ${authError ? html`<div className="error-state">${authError}</div>` : null}
           </div>
@@ -2304,10 +3127,10 @@ function App() {
         <section className="hero">
           <div className="hero-panel auth-panel" role="region" aria-labelledby="sign-in-title">
             <div className="eyebrow">Invite-Only Access</div>
-            <h1 id="sign-in-title">Sign in to open the scanner</h1>
+            <h1 id="sign-in-title">Sign in to enter the vault tracker</h1>
             <p className="hero-copy">
-              Use your approved email address and we will send a one-time passcode. Only emails on the allowlist can enter
-              the app.
+              Use your approved email address and we will send a one-time passcode. Only invited guests can open the vault
+              doors.
             </p>
             <form className="auth-form" onSubmit=${sendMagicLink}>
               <label className="auth-field">
@@ -2372,9 +3195,9 @@ function App() {
         <section className="hero">
           <div className="hero-panel auth-panel">
             <div className="eyebrow">Checking Access</div>
-            <h1>Validating your access</h1>
+            <h1>Checking your invite list pass</h1>
             <p className="hero-copy">
-              Your Supabase session is active. We are now checking whether your email is approved for this app.
+              You are signed in. We are making sure your invite is ready before opening the live scanner.
             </p>
             ${authError ? html`<div className="error-state">${authError}</div>` : null}
             <button className="button button-secondary" onClick=${signOut}>Sign out</button>
@@ -2402,6 +3225,40 @@ function App() {
                     referrerPolicy="no-referrer"
                   />
                   <div className="image-lightbox-title">${selectedProductImage.productName}</div>
+                </div>
+              </section>
+            `
+          : null}
+        ${pendingVaultProduct
+          ? html`
+              <section className="vault-product-helper" role="dialog" aria-live="polite" aria-label="Saved Vault product link">
+                <div className="vault-product-helper-panel">
+                  <button className="change-toast-close vault-product-helper-close" type="button" onClick=${dismissPendingVaultProduct}>
+                    Close
+                  </button>
+                  ${pendingVaultProduct.imageUrl
+                    ? html`
+                        <img
+                          className="vault-product-helper-image"
+                          src=${pendingVaultProduct.imageUrl}
+                          alt=${pendingVaultProduct.imageAlt || pendingVaultProduct.productName || ""}
+                          referrerPolicy="no-referrer"
+                        />
+                      `
+                    : null}
+                  <div>
+                    <div className="manager-kicker">Saved product link</div>
+                    <h2 className="vault-product-helper-title">${pendingVaultProduct.productName}</h2>
+                    <p className="section-note">
+                      If ABC sent you to login, finish login in the new tab, then use Reopen product to return to this exact bottle.
+                    </p>
+                    <div className="vault-product-helper-url">${pendingVaultProduct.productUrl}</div>
+                  </div>
+                  <div className="vault-product-helper-actions">
+                    <button className="button button-primary vault-product-helper-primary" type="button" onClick=${reopenPendingVaultProduct}>
+                      Reopen product
+                    </button>
+                  </div>
                 </div>
               </section>
             `
@@ -2504,10 +3361,20 @@ function App() {
           <div className="hero-topline">
             <div className="hero-title-stack">
               <h1 id="dashboard-title">ABC Vault listing tracker</h1>
-              <button className="button button-primary hero-scan-button" type="button" onClick=${runScan} disabled=${loading}>
-                ${loading ? "Scanning live HTML..." : "Run fresh scan"}
-              </button>
-            </div>
+                    <button
+                      className="button button-primary hero-scan-button"
+                      type="button"
+                      onClick=${runScan}
+                      disabled=${manualRefreshButtonDisabled}
+                    >
+                      ${loading
+                        ? "Scanning live HTML..."
+                        : !refreshWindowStatus.allowed && manualBlockedRefreshCooldownSeconds > 0
+                        ? `Run fresh scan (${manualBlockedRefreshCooldownSeconds}s)`
+                        : "Run fresh scan"}
+                    </button>
+                    ${manualRefreshHelperMessage ? html`<p className="section-note">${manualRefreshHelperMessage}</p>` : null}
+                  </div>
             <div className="hero-status-stack">
               <div
                 className=${`vault-status-banner vault-status-${vaultStatus}`}
@@ -2548,6 +3415,7 @@ function App() {
                     className=${`button button-secondary ${
                       activePage === "settings" ||
                       activePage === "server-refresh" ||
+                      activePage === "billing-alerts" ||
                       activePage === "hot-manager" ||
                       activePage === "user-manager" ||
                       activePage === "vault-email-events"
@@ -2561,18 +3429,28 @@ function App() {
                   </button>
                 `
               : null}
-            <a className="button button-secondary" href="https://theabcvault.com/shop/" target="_blank" rel="noreferrer">
-              Open source page
+            <a className="button button-secondary" href=${ABC_VAULT_SHOP_URL} target="_blank" rel="noopener noreferrer">
+              Vault Link
             </a>
+            ${appUser.role === "admin"
+              ? html`
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick=${openVaultLinkOnRemoteBrowser}
+                    disabled=${Boolean(remoteBrowserOpeningKey)}
+                  >
+                    ${remoteBrowserOpeningKey === "vault-link" ? "Opening VPS..." : "Open VPS"}
+                  </button>
+                `
+              : null}
           </div>
           ${activePage === "listings"
             ? html`
                 <div className="scan-meta">
                   <div className="countdown-row" aria-live="polite">
                     <strong>Next auto refresh:</strong>
-                    <span>
-                      ${!autoRefreshEnabled ? "Paused" : loading ? "Waiting for current scan..." : `${countdown}s`}
-                    </span>
+                    <span>${browserRefreshStatusLabel}</span>
                   </div>
                   <div className="refresh-controls-row">
                     <div className="refresh-rate-row">
@@ -2585,6 +3463,7 @@ function App() {
                               type="button"
                               onClick=${() => setRefreshIntervalSeconds(seconds)}
                               aria-pressed=${refreshIntervalSeconds === seconds}
+                              disabled=${browserRefreshBlocked}
                             >
                               ${seconds}s
                             </button>
@@ -2605,6 +3484,7 @@ function App() {
                                 setCountdown(refreshIntervalSeconds);
                               }}
                               aria-pressed=${autoRefreshEnabled}
+                              disabled=${browserRefreshBlocked}
                             >
                               Start
                             </button>
@@ -2660,6 +3540,7 @@ function App() {
                                   serverRefreshSettings,
                                   serverRefreshEnabled,
                                   serverRefreshIntervalMinutes,
+                                  serverRefreshMode,
                                 )
                               : "Admin only"
                           }
@@ -2740,7 +3621,8 @@ function App() {
               <div className="surface-header">
                 <div>
                   <h2 className="section-title" id="what-changed-title">What Changed</h2>
-                  <p className="section-note">New items stay here until the user dismisses them individually or clears a section.</p>
+                  <p className="section-note">Unread scan messages are saved like an inbox and stay here until you mark them read.</p>
+                  ${changeInboxMessage ? html`<p className="section-note">${changeInboxMessage}</p>` : null}
                 </div>
                 <div className="changes-actions">
                   <button className="button button-secondary" type="button" onClick=${() => setChangesCollapsed((value) => !value)} aria-expanded=${!changesCollapsed} aria-controls="what-changed-panels">
@@ -2772,7 +3654,7 @@ function App() {
                                         <button
                                           className="text-button"
                                           type="button"
-                                          onClick=${() => dismissChangeItem("added", item.productId)}
+                                          onClick=${() => dismissChangeItem("added", item)}
                                         >
                                           Mark read
                                         </button>
@@ -2808,7 +3690,7 @@ function App() {
                                         <button
                                           className="text-button"
                                           type="button"
-                                          onClick=${() => dismissChangeItem("changed", item.productId)}
+                                          onClick=${() => dismissChangeItem("changed", item)}
                                         >
                                           Mark read
                                         </button>
@@ -2837,7 +3719,7 @@ function App() {
                                         <button
                                           className="text-button"
                                           type="button"
-                                          onClick=${() => dismissChangeItem("removed", item.productId)}
+                                          onClick=${() => dismissChangeItem("removed", item)}
                                         >
                                           Mark read
                                         </button>
@@ -2950,7 +3832,7 @@ function App() {
                     </span>
                     <span>
                       App URL used after sign-in:
-                      <a className="product-link" href=${vaultEmailAppUrl} target="_blank" rel="noreferrer">
+                      <a className="product-link" href=${vaultEmailAppUrl} target="_blank" rel="noopener noreferrer">
                         ${vaultEmailAppUrl}
                       </a>
                     </span>
@@ -3324,6 +4206,16 @@ function App() {
                       </article>
                       <article className="manager-card">
                         <div className="manager-kicker">Admin</div>
+                        <h3 className="manager-title">Billing Alerts</h3>
+                        <p className="section-note">Manage the Vercel spend webhook and Pushover alerts for budget thresholds and billing cycle end.</p>
+                        <div className="change-toast-actions">
+                          <button className="button button-secondary" onClick=${() => setActivePage("billing-alerts")}>
+                            Open Billing Alerts
+                          </button>
+                        </div>
+                      </article>
+                      <article className="manager-card">
+                        <div className="manager-kicker">Admin</div>
                         <h3 className="manager-title">Stored listings</h3>
                         <p className="section-note">
                           Clear the stored listings snapshot for testing. The next manual or server refresh can add items back.
@@ -3496,6 +4388,21 @@ function App() {
                 <article className="manager-card">
                   <div className="manager-kicker">Server Schedule</div>
                   <h3 className="manager-title">Background refresh controls</h3>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Hard-coded refresh window: ${serverRefreshSettings?.refreshWindow?.scheduleLabel || refreshWindowStatus.scheduleLabel}</span>
+                    <span>
+                      Current window status:
+                      ${serverRefreshSettings?.refreshWindow?.allowed
+                        ? "Refreshes are allowed right now."
+                        : serverRefreshSettings?.refreshWindow?.blockedReason || refreshWindowStatus.blockedReason}
+                    </span>
+                    <span>
+                      Next allowed window:
+                      ${serverRefreshSettings?.refreshWindow?.allowed
+                        ? "Right now"
+                        : serverRefreshSettings?.refreshWindow?.nextAllowedLabel || refreshWindowStatus.nextAllowedLabel}
+                    </span>
+                  </div>
                   <label className="profile-toggle-row">
                     <span>
                       <strong>Enable server-side refresh</strong>
@@ -3510,7 +4417,51 @@ function App() {
                       <span className="profile-toggle-knob"></span>
                     </button>
                   </label>
+                  <label className="profile-toggle-row">
+                    <span>
+                      <strong>Enable browser refreshes</strong>
+                      <small>Allow browser-triggered refreshes, including Run fresh scan and auto refresh, during the allowed weekday window.</small>
+                    </span>
+                    <button
+                      type="button"
+                      className=${`profile-toggle ${browserRefreshGloballyEnabled ? "profile-toggle-on" : ""}`}
+                      aria-pressed=${browserRefreshGloballyEnabled}
+                      onClick=${() => setBrowserRefreshGloballyEnabled((currentValue) => !currentValue)}
+                    >
+                      <span className="profile-toggle-knob"></span>
+                    </button>
+                  </label>
                   <div className="profile-alert-grid">
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Interval inside the daytime refresh window</strong>
+                        <small>Runs inside the Monday-Friday, 8:00 AM-5:00 PM ET server refresh window using the interval you pick below.</small>
+                      </span>
+                      <button
+                        type="button"
+                        className=${`button button-secondary button-small ${serverRefreshMode === SERVER_REFRESH_MODE_INTERVAL ? "profile-critical-active" : ""}`}
+                        onClick=${() => setServerRefreshMode(SERVER_REFRESH_MODE_INTERVAL)}
+                      >
+                        Select
+                      </button>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Sunday-Friday at 12:30 AM and 1:00 AM ET</strong>
+                        <small>Runs twice overnight on Sunday, Monday, Tuesday, Wednesday, Thursday, and Friday, even though browser refreshes stay blocked outside the daytime window.</small>
+                      </span>
+                      <button
+                        type="button"
+                        className=${`button button-secondary button-small ${serverRefreshMode === SERVER_REFRESH_MODE_OVERNIGHT ? "profile-critical-active" : ""}`}
+                        onClick=${() => setServerRefreshMode(SERVER_REFRESH_MODE_OVERNIGHT)}
+                      >
+                        Select
+                      </button>
+                    </div>
+                  </div>
+                  ${serverRefreshMode === SERVER_REFRESH_MODE_INTERVAL
+                    ? html`
+                        <div className="profile-alert-grid">
                     ${SERVER_REFRESH_INTERVAL_OPTIONS.map(
                       (intervalMinutes) => html`
                         <div className="profile-toggle-row profile-toggle-card" key=${`server-refresh-${intervalMinutes}`}>
@@ -3534,7 +4485,9 @@ function App() {
                         </div>
                       `,
                     )}
-                  </div>
+                        </div>
+                      `
+                    : null}
                   <div className="manager-meta manager-meta-stack">
                     <span>
                       Last server-side refresh:
@@ -3544,16 +4497,20 @@ function App() {
                     </span>
                     <span>
                       Active refresh rate:
-                      ${formatServerRefreshMode(serverRefreshIntervalMinutes)}
+                      ${formatServerRefreshMode(serverRefreshIntervalMinutes, serverRefreshMode)}
                     </span>
                     <span>
                       Next eligible refresh:
-                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshIntervalMinutes)}
+                      ${getNextServerRefreshLabel(serverRefreshSettings, serverRefreshEnabled, serverRefreshIntervalMinutes, serverRefreshMode)}
                     </span>
                     <span>
                       Platform limit:
                       ${serverRefreshSettings?.limitations?.schedulingExplanation ||
                       "Vercel cron jobs wake the server once per minute."}
+                    </span>
+                    <span>
+                      Browser refreshes:
+                      ${browserRefreshGloballyEnabled ? "Enabled on Server Page" : "Disabled on Server Page"}
                     </span>
                   </div>
                   ${serverRefreshMessage ? html`<div className="scan-status">${serverRefreshMessage}</div>` : null}
@@ -3562,6 +4519,175 @@ function App() {
                       ${serverRefreshSaving ? "Saving schedule..." : "Save server refresh settings"}
                     </button>
                   </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Remote Browser</div>
+                  <h3 className="manager-title">VPS opener status</h3>
+                  <p className="section-note">Check the remote browser, open its dashboard, and confirm which page the VPS reached most recently.</p>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Status: ${remoteBrowserLoading ? "Checking..." : !remoteBrowserConfigured ? "Not configured" : remoteBrowserStatus?.busy ? "Busy" : "Ready"}</span>
+                    <span>Flow mode: ${remoteBrowserStatus?.lastFlowMode || "Direct open"}</span>
+                    <span>Vault link: ${remoteBrowserStatus?.lastVaultUrl || "Not used yet"}</span>
+                    <span>Last requested URL: ${remoteBrowserStatus?.lastUrl || "Nothing opened yet"}</span>
+                    <span>Product link: ${remoteBrowserStatus?.lastProductUrl || "Not used yet"}</span>
+                    <span>Last Vault key: ${remoteBrowserStatus?.lastVaultKey || "Not sent yet"}</span>
+                    <span>Current page: ${remoteBrowserStatus?.lastFinalUrl || "Unknown"}</span>
+                    <span>Page title: ${remoteBrowserStatus?.lastTitle || "Unknown"}</span>
+                    <span>Last opened: ${remoteBrowserStatus?.lastOpenedAt ? formatScanTime(remoteBrowserStatus.lastOpenedAt) : "Not opened yet"}</span>
+                    <span>Error: ${remoteBrowserStatus?.lastError || "No recent error"}</span>
+                  </div>
+                  ${remoteBrowserMessage ? html`<div className="scan-status">${remoteBrowserMessage}</div>` : null}
+                  <div className="change-toast-actions">
+                    <button className="button button-secondary" onClick=${loadRemoteBrowserStatus} disabled=${remoteBrowserLoading}>
+                      ${remoteBrowserLoading ? "Refreshing status..." : "Refresh remote browser"}
+                    </button>
+                    <a
+                      className=${`button button-secondary ${!remoteBrowserDashboardUrl ? "button-disabled-link" : ""}`}
+                      href=${remoteBrowserDashboardUrl || "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-disabled=${!remoteBrowserDashboardUrl}
+                      onClick=${(event) => {
+                        if (!remoteBrowserDashboardUrl) {
+                          event.preventDefault();
+                        }
+                      }}
+                    >
+                      Open VPS dashboard
+                    </a>
+                    <a
+                      className=${`button button-secondary ${!remoteBrowserDesktopUrl ? "button-disabled-link" : ""}`}
+                      href=${remoteBrowserDesktopUrl || "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-disabled=${!remoteBrowserDesktopUrl}
+                      onClick=${(event) => {
+                        if (!remoteBrowserDesktopUrl) {
+                          event.preventDefault();
+                        }
+                      }}
+                    >
+                      Open live Chrome
+                    </a>
+                  </div>
+                </article>
+              </div>
+            </section>
+          `
+        : activePage === "billing-alerts"
+        ? html`
+            <section className="surface manager-surface">
+              <div className="surface-header">
+                <div>
+                  <h2 className="section-title">Billing Alerts</h2>
+                  <p className="section-note">Admin controls for the Vercel spend webhook and Pushover alerts.</p>
+                </div>
+                <button className="button button-secondary" onClick=${() => setActivePage("settings")}>
+                  Back to settings
+                </button>
+              </div>
+              <div className="profile-grid">
+                <article className="manager-card">
+                  <div className="manager-kicker">Webhook</div>
+                  <h3 className="manager-title">Vercel spend webhook</h3>
+                  <p className="section-note">
+                    Paste this webhook URL into Vercel Spend Management. Alerts go to admin accounts with Pushover enabled and a saved Pushover User Key.
+                  </p>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Webhook URL: ${vercelSpendWebhookUrl || "Loading..."}</span>
+                    <span>Webhook secret: ${vercelSpendWebhookSecretConfigured ? "Configured on server" : "Missing on server"}</span>
+                    <span>Pushover app token: ${pushoverConfigured ? "Configured on server" : "Missing on server"}</span>
+                  </div>
+                  <div className="change-toast-actions">
+                    <button className="button button-secondary" onClick=${copyVercelSpendWebhookUrl} disabled=${!vercelSpendWebhookUrl}>
+                      Copy webhook URL
+                    </button>
+                    <button className="button button-secondary" onClick=${loadVercelSpendWebhookSettings}>
+                      Refresh billing settings
+                    </button>
+                  </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Alerts</div>
+                  <h3 className="manager-title">Notification rules</h3>
+                  <label className="profile-toggle-row">
+                    <span>
+                      <strong>Enable Billing Alerts</strong>
+                      <small>Allow the webhook to send Pushover notifications to admin accounts.</small>
+                    </span>
+                    <button
+                      type="button"
+                      className=${`profile-toggle ${vercelSpendWebhookEnabled ? "profile-toggle-on" : ""}`}
+                      aria-pressed=${vercelSpendWebhookEnabled}
+                      onClick=${() => setVercelSpendWebhookEnabled((currentValue) => !currentValue)}
+                    >
+                      <span className="profile-toggle-knob"></span>
+                    </button>
+                  </label>
+                  <div className="profile-alert-grid">
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Budget reached</strong>
+                        <small>Send a push alert when Vercel reports a budget threshold was reached.</small>
+                      </span>
+                      <button
+                        type="button"
+                        className=${`button button-secondary button-small ${vercelSpendCriticalBudgetReached ? "profile-critical-active" : ""}`}
+                        onClick=${() => setVercelSpendCriticalBudgetReached((currentValue) => !currentValue)}
+                      >
+                        ${vercelSpendCriticalBudgetReached ? "Critical" : "Normal"}
+                      </button>
+                    </div>
+                    <div className="profile-toggle-row profile-toggle-card">
+                      <span>
+                        <strong>Billing cycle ended</strong>
+                        <small>Send a push alert when Vercel posts the end-of-billing-cycle event.</small>
+                      </span>
+                      <div className="profile-toggle-pair">
+                        <button
+                          type="button"
+                          className=${`profile-toggle ${vercelSpendNotifyBillingCycleEnd ? "profile-toggle-on" : ""}`}
+                          aria-pressed=${vercelSpendNotifyBillingCycleEnd}
+                          onClick=${() => setVercelSpendNotifyBillingCycleEnd((currentValue) => !currentValue)}
+                        >
+                          <span className="profile-toggle-knob"></span>
+                        </button>
+                        <button
+                          type="button"
+                          className=${`button button-secondary button-small ${vercelSpendCriticalBillingCycleEnd ? "profile-critical-active" : ""}`}
+                          onClick=${() => setVercelSpendCriticalBillingCycleEnd((currentValue) => !currentValue)}
+                        >
+                          ${vercelSpendCriticalBillingCycleEnd ? "Critical" : "Normal"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  ${vercelSpendWebhookMessage ? html`<div className="scan-status">${vercelSpendWebhookMessage}</div>` : null}
+                  <div className="change-toast-actions">
+                    <button className="button button-primary" onClick=${saveVercelSpendWebhookSettings} disabled=${vercelSpendWebhookSaving}>
+                      ${vercelSpendWebhookSaving ? "Saving Billing Alerts..." : "Save Billing Alerts"}
+                    </button>
+                  </div>
+                </article>
+                <article className="manager-card">
+                  <div className="manager-kicker">Latest webhook</div>
+                  <h3 className="manager-title">Last Vercel spend event</h3>
+                  <div className="manager-meta manager-meta-stack">
+                    <span>Event type: ${formatVercelSpendEventType(vercelSpendWebhookSettings?.lastEventType)}</span>
+                    <span>Received: ${vercelSpendWebhookSettings?.lastEventReceivedAt ? formatScanTime(vercelSpendWebhookSettings.lastEventReceivedAt) : "Not received yet"}</span>
+                    <span>Message: ${vercelSpendWebhookSettings?.lastEventMessage || "No Vercel spend webhook event has been recorded yet."}</span>
+                  </div>
+                  ${vercelSpendWebhookSettings?.lastEventPayload
+                    ? html`
+                        <details className="email-event-preview">
+                          <summary>View last webhook payload</summary>
+                          <div className="email-event-preview-body">
+                            <div className="email-event-preview-label">Stored webhook payload</div>
+                            <p>${JSON.stringify(vercelSpendWebhookSettings.lastEventPayload, null, 2)}</p>
+                          </div>
+                        </details>
+                      `
+                    : null}
                 </article>
               </div>
             </section>
@@ -3672,6 +4798,7 @@ function App() {
                 <th>Sourced & Certified</th>
                 <th>Purchasable</th>
                 <th>Hot</th>
+                ${appUser?.role === "admin" ? html`<th>Remote</th>` : null}
               </tr>
             </thead>
             <tbody>
@@ -3690,7 +4817,7 @@ function App() {
                                   className="product-link"
                                   href=${item.productUrl}
                                   target="_blank"
-                                  rel="noreferrer"
+                                  rel="noopener noreferrer"
                                   onClick=${(event) => copyVaultKeyAndOpenProductLink(event, item)}
                                 >
                                   ${item.productName}
@@ -3712,6 +4839,20 @@ function App() {
                         ${isHotItem(hotItems, item.productId || item.productName) ? "Remove hot" : "Mark hot"}
                       </button>
                     </td>
+                    ${appUser?.role === "admin"
+                      ? html`
+                          <td>
+                            <button
+                              className="button button-secondary button-small"
+                              type="button"
+                              onClick=${() => openOnRemoteBrowser(item)}
+                              disabled=${!item.productUrl || Boolean(remoteBrowserOpeningKey)}
+                            >
+                              ${remoteBrowserOpeningKey === getRemoteOpenItemKey(item) ? "Opening..." : "Open on VPS"}
+                            </button>
+                          </td>
+                        `
+                      : null}
                   </tr>
                 `,
               )}
@@ -3733,7 +4874,7 @@ function App() {
                               className="product-link"
                               href=${item.productUrl}
                               target="_blank"
-                              rel="noreferrer"
+                              rel="noopener noreferrer"
                               onClick=${(event) => copyVaultKeyAndOpenProductLink(event, item)}
                             >
                               ${item.productName}
@@ -3750,6 +4891,20 @@ function App() {
                     <span>${formatBooleanText(item.isPurchasableFromListingPage)}</span>
                   </div>
                 </div>
+                ${appUser?.role === "admin"
+                  ? html`
+                      <div className="mobile-card-actions">
+                        <button
+                          className="button button-secondary button-small"
+                          type="button"
+                          onClick=${() => openOnRemoteBrowser(item)}
+                          disabled=${!item.productUrl || Boolean(remoteBrowserOpeningKey)}
+                        >
+                          ${remoteBrowserOpeningKey === getRemoteOpenItemKey(item) ? "Opening..." : "Open on VPS"}
+                        </button>
+                      </div>
+                    `
+                  : null}
               </article>
             `,
           )}

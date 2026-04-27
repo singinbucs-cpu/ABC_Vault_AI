@@ -1,0 +1,15 @@
+138.197.2.74.sslip.io {
+  @protected path /dashboard /dashboard* /dashboard-data /dashboard-open /dashboard-screenshot /desktop /desktop*
+  basicauth @protected {
+    vault $2a$14$bGtxGQATNOIM5.uwgNJ95O9knxGD1bTDdYfRsFHrCf5V8K0okr3MK
+  }
+
+  redir /desktop /desktop/vnc_lite.html?path=desktop/websockify&autoconnect=true&resize=scale 302
+  redir /desktop/ /desktop/vnc_lite.html?path=desktop/websockify&autoconnect=true&resize=scale 302
+
+  handle_path /desktop* {
+    reverse_proxy 127.0.0.1:6080
+  }
+
+  reverse_proxy 127.0.0.1:3100
+}

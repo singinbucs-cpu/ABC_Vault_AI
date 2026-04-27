@@ -2,7 +2,7 @@ const { requireAppUser } = require("../lib/auth");
 const { recordAppUserLogin, updateAppUserProfile } = require("../lib/app-users-db");
 const { validatePushoverUserKey, isPushoverConfigured } = require("../lib/pushover");
 const { getVaultEmailConfig, isVaultEmailIngestConfigured } = require("../lib/vault-key-email");
-const { getLatestServerRefreshSnapshot } = require("../lib/scan-history-db");
+const { getLatestServerRefreshSnapshotSummary } = require("../lib/scan-history-db");
 
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -92,7 +92,7 @@ module.exports = async (req, res) => {
       });
 
       const vaultEmailConfig = getVaultEmailConfig();
-      const lastServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+      const lastServerRefresh = await getLatestServerRefreshSnapshotSummary().catch(() => null);
 
       res.status(200).send(
         JSON.stringify(
@@ -129,7 +129,7 @@ module.exports = async (req, res) => {
     }
   }
 
-  const lastServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+  const lastServerRefresh = await getLatestServerRefreshSnapshotSummary().catch(() => null);
   const shouldRecordLogin = req.query?.recordLogin === "1";
   const appUser = shouldRecordLogin
     ? await recordAppUserLogin(auth.user.email).catch(() => auth.appUser)

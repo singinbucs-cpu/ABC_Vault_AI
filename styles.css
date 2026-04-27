@@ -537,6 +537,11 @@ textarea {
   font-size: 0.88rem;
 }
 
+.muted-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1094,24 +1099,48 @@ textarea {
 
 .email-event-preview {
   margin-top: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 250, 244, 0.88));
 }
 
 .email-event-preview summary {
   cursor: pointer;
+  padding: 12px 14px;
   color: var(--accent);
   font-weight: 800;
+  list-style: none;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.email-event-preview summary::-webkit-details-marker {
+  display: none;
+}
+
+.email-event-preview-body {
+  padding: 0 14px 14px;
+}
+
+.email-event-preview-label {
+  margin: 2px 0 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .email-event-preview p {
   max-height: 280px;
-  margin: 10px 0 0;
-  padding: 12px;
+  margin: 0;
+  padding: 14px 15px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.48);
+  background: #fffdf9;
+  color: var(--text);
+  line-height: 1.55;
   white-space: pre-wrap;
 }
 
@@ -1275,6 +1304,80 @@ textarea {
   font-family: "Space Grotesk", sans-serif;
   font-weight: 800;
   line-height: 1.25;
+}
+
+.vault-product-helper {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(10, 12, 16, 0.42);
+}
+
+.vault-product-helper-panel {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  width: min(650px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  overflow: visible;
+  padding: 24px;
+  border: 1px solid rgba(224, 0, 0, 0.24);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--panel) 94%, #ffffff 6%);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
+  box-sizing: border-box;
+}
+
+.vault-product-helper-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 1;
+}
+
+.vault-product-helper-image {
+  width: min(288px, 70vw);
+  max-height: 325px;
+  justify-self: center;
+  object-fit: contain;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.vault-product-helper-title {
+  margin: 4px 0 6px;
+  color: var(--text);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: clamp(1rem, 2.4vw, 1.25rem);
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+}
+
+.vault-product-helper-url {
+  overflow: hidden;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.vault-product-helper-actions {
+  display: grid;
+}
+
+.vault-product-helper-primary {
+  width: 100%;
+  min-height: 56px;
+  font-size: 1rem;
+  justify-content: center;
 }
 
 .product-link {
@@ -1484,6 +1587,11 @@ tbody tr:hover td {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
+}
+
+.button-disabled-link {
+  pointer-events: none;
+  opacity: 0.55;
 }
 
 .vault-key-toast {
@@ -1818,6 +1926,32 @@ tbody tr:hover td {
     width: 100%;
   }
 
+  .vault-product-helper {
+    padding: 10px;
+  }
+
+  .vault-product-helper-panel {
+    width: 100%;
+    gap: 12px;
+    padding: 14px;
+    overflow: hidden;
+  }
+
+  .vault-product-helper-close {
+    position: static;
+    justify-self: end;
+    margin-bottom: 2px;
+  }
+
+  .vault-product-helper-image {
+    width: min(230px, 68vw);
+    max-height: 245px;
+  }
+
+  .vault-product-helper-actions {
+    grid-template-columns: 1fr;
+  }
+
   .refresh-controls-row {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -1937,6 +2071,25 @@ tbody tr:hover td {
 :root[data-theme="dark"] .diff-column,
 :root[data-theme="dark"] .manager-card {
   background: linear-gradient(180deg, rgba(28, 31, 36, 0.96), rgba(18, 20, 24, 0.98));
+}
+
+:root[data-theme="dark"] .email-event-preview {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(38, 42, 49, 0.96), rgba(23, 26, 31, 0.98));
+}
+
+:root[data-theme="dark"] .email-event-preview summary {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .email-event-preview-label {
+  color: #c8cfd8;
+}
+
+:root[data-theme="dark"] .email-event-preview p {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: #171a20;
+  color: #f2f5f7;
 }
 
 :root[data-theme="dark"] .product-thumb,

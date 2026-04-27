@@ -1,6 +1,6 @@
 const { authenticateRequest } = require("../lib/auth");
 const { getAppUserByEmail } = require("../lib/app-users-db");
-const { getLatestServerRefreshSnapshot } = require("../lib/scan-history-db");
+const { getLatestServerRefreshSnapshotSummary } = require("../lib/scan-history-db");
 
 function sendSseEvent(res, eventName, payload) {
   res.write(`event: ${eventName}\n`);
@@ -36,7 +36,7 @@ module.exports = async (req, res) => {
   });
 
   let closed = false;
-  const initialServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+  const initialServerRefresh = await getLatestServerRefreshSnapshotSummary().catch(() => null);
   let lastVaultKeySignature = JSON.stringify({
     vaultKeyCode: auth.appUser?.vaultKeyCode || "",
     vaultKeyLastReceivedAt: auth.appUser?.vaultKeyLastReceivedAt || "",
@@ -57,7 +57,7 @@ module.exports = async (req, res) => {
 
     try {
       const latestAppUser = await getAppUserByEmail(auth.user.email);
-      const latestServerRefresh = await getLatestServerRefreshSnapshot().catch(() => null);
+      const latestServerRefresh = await getLatestServerRefreshSnapshotSummary().catch(() => null);
       const nextVaultKeySignature = JSON.stringify({
         vaultKeyCode: latestAppUser?.vaultKeyCode || "",
         vaultKeyLastReceivedAt: latestAppUser?.vaultKeyLastReceivedAt || "",
