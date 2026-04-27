@@ -820,16 +820,37 @@ function renderVaultEmailEvent(event, onDelete) {
   const candidateEmails = Array.isArray(event.candidateEmails) ? event.candidateEmails : [];
   const recipientEmails = Array.isArray(event.recipientEmails) ? event.recipientEmails : [];
   const eventTime = event.receivedAt || event.createdAt;
+  const eventTypeLabel =
+    event.eventType === "order_confirmation"
+      ? "Order confirmation"
+      : event.eventType === "pickup_ready"
+      ? "Pickup ready"
+      : event.eventType === "gmail_forwarding_confirmation"
+      ? "Gmail forwarding confirmation"
+      : event.eventType === "vault_email"
+      ? "Vault email"
+      : event.eventType || "Inbound email";
+  const statusLabel =
+    event.eventType === "order_confirmation" && event.status === "notification_sent"
+      ? "Order confirmation notification sent"
+      : event.eventType === "order_confirmation" && event.status === "notification_skipped"
+      ? "Order confirmation notification skipped"
+      : event.eventType === "pickup_ready" && event.status === "notification_sent"
+      ? "Pickup ready notification sent"
+      : event.eventType === "pickup_ready" && event.status === "notification_skipped"
+      ? "Pickup ready notification skipped"
+      : event.status;
+  const statusIsPositive = ["saved", "saved_global", "notification_sent"].includes(event.status);
 
   return html`
     <article className="manager-card email-event-card" key=${`email-event-${event.id}`}>
       <div className="manager-card-head">
         <div>
-          <div className="manager-kicker">${event.eventType || "Inbound email"}</div>
+          <div className="manager-kicker">${eventTypeLabel}</div>
           <h3 className="manager-title">${event.subject || "No subject captured"}</h3>
         </div>
         <div className="email-event-actions">
-          <span className=${`pill ${event.status === "saved" ? "pill-yes" : "pill-no"}`}>${event.status}</span>
+          <span className=${`pill ${statusIsPositive ? "pill-yes" : "pill-no"}`}>${statusLabel}</span>
           <button className="button button-secondary button-small" type="button" onClick=${() => onDelete(event.id)}>
             Delete
           </button>
